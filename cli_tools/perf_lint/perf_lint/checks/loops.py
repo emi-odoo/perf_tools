@@ -38,7 +38,7 @@ class LoopQueryChecker(Checker):
         "SD101": "A search/read_group/next_by_code per loop iteration turns "
                  "one operation into N round-trips. Hoist it out: one "
                  "_read_group/search over the whole set, then a dict lookup "
-                 "per record. (ANTIPATTERNS.md — the golden thread)",
+                 "per record.",
         "SD102": "write()/create()/unlink() per iteration. The 19.0 ORM "
                  "batches the SQL via towrite, but you still pay Python "
                  "overhead per call and defeat no-op skipping when values "

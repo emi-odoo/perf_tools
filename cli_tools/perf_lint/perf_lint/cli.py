@@ -10,8 +10,7 @@ from .runner import Config, lint, load_plugin
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="perf_lint",
-        description="Static analysis for Odoo ORM performance anti-patterns "
-                    "(see insider_slowdesk/ANTIPATTERNS.md).",
+        description="Static analysis for Odoo ORM performance anti-patterns ",
         epilog="Codes support prefix matching: --ignore SD3 disables all "
                "SD3xx checks. Inline: `# noqa: SD201`.",
     )

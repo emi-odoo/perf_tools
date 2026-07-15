@@ -1,10 +1,10 @@
 """perf_lint — static analysis for Odoo ORM performance anti-patterns.
 
-Detects the patterns catalogued in insider_slowdesk/ANTIPATTERNS.md using
-pure AST analysis (stdlib only, no Odoo import needed).
+Detects anti-patterns using pure AST analysis (stdlib only, no Odoo import
+needed).
 
 Usage (from the repo root):
-    python3 -m perf_lint insider_slowdesk          # lint a module
+    python3 -m perf_lint my_addon                  # lint a module
     python3 -m perf_lint --list-checks             # show all checks
     python3 -m perf_lint --explain SD103           # what/why/fix
     python3 -m perf_lint . --ignore SD3,SD303      # toggle checks off
@@ -18,8 +18,7 @@ Inline suppression (flake8-style):
 A file whose first lines contain "# perf-lint: skip-file" is skipped.
 
 Checks (SD1xx loops/N+1 · SD2xx ORM misuse · SD3xx indexing · SD4xx storage):
-    see --list-checks / --explain CODE. Each maps back to a numbered bug in
-    ANTIPATTERNS.md.
+    see --list-checks / --explain CODE.
 
 Writing your own check (put this in my_checks.py and pass --plugin):
 
