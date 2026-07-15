@@ -188,6 +188,21 @@ perf_lint/
     └── storage.py  # SD401-402
 ```
 
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+No test dependencies — plain stdlib `unittest`. Each test in
+`tests/test_perf_lint.py` writes a small bad-code fixture into a temp
+directory, runs the real `lint()` pipeline over it and asserts the exact
+finding codes, so the suite doubles as a catalog of examples: what each
+check fires on, and the near-miss variants it must stay quiet about
+(`create([listcomp])` in a loop, `search([], limit=...)`, indexed fields,
+unstored computes, `# noqa`, `# perf-lint: skip-file`, ...). When you add
+a checker, add one triggering fixture and one clean counter-example.
+
 ## Writing a new checker
 
 Checkers are plain classes registered with a decorator. External plugins

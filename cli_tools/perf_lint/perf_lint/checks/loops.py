@@ -42,20 +42,21 @@ class LoopQueryChecker(Checker):
         "SD102": "write()/create()/unlink() per iteration. The 19.0 ORM "
                  "batches the SQL via towrite, but you still pay Python "
                  "overhead per call and defeat no-op skipping when values "
-                 "differ per record (bug #5). Assign to the recordset once, "
+                 "differ per record. Assign to the recordset once, "
                  "or build vals for a single batched call.",
         "SD103": "Compute methods receive the WHOLE recordset — the "
                  "framework already batched for you; one query per record "
-                 "un-batches it. Opening a list view fires it per row "
-                 "(bugs #2/#8: 120 queries -> 2 with _read_group).",
+                 "un-batches it. Opening a list view fires it per row; "
+                 "one _read_group over the whole set does the same work "
+                 "in a couple of queries.",
         "SD104": "create() is @model_create_multi and write() always gets "
                  "the full recordset. Per-record queries inside turn one "
-                 "batched call into N+1 (bugs #1/#9: 815 queries vs 18).",
+                 "batched call into N+1.",
         "SD105": "@api.constrains fires on every create/write. A per-record "
                  "search_count is a full scan per saved record — and if it "
                  "guards uniqueness it is also WRONG under concurrency: "
                  "only the database can guarantee unique. Use "
-                 "models.Constraint('UNIQUE (col)') (bug #10).",
+                 "models.Constraint('UNIQUE (col)').",
         "SD106": "Raw SQL in a loop is flagged for review only: chunked "
                  "batch processing (migrations, _commit_progress crons) is "
                  "legitimate — silence with `# noqa: SD106` — but a "
@@ -98,21 +99,21 @@ class LoopQueryChecker(Checker):
             if ev.fname == "next_by_code":
                 msg += ("; next_by_code() costs 2 queries per call and has "
                         "no batch API — consider assigning references from "
-                        "id after create (bug #1)")
+                        "id after create")
             elif specific == "SD105" and _id_exclusion_domain(ev.node):
                 msg += ("; this looks like a hand-rolled uniqueness check — "
                         "it is slow AND race-unsafe; declare "
-                        "models.Constraint('UNIQUE (...)') instead (bug #10)")
+                        "models.Constraint('UNIQUE (...)') instead")
             yield self.finding(code, mod, ev.node, msg)
 
     @staticmethod
     def _context(code):
         return {
             "SD103": " — computes are batched over the whole recordset; "
-                     "batch with one _read_group instead (bugs #2/#8)",
+                     "batch with one _read_group instead",
             "SD104": " — create/write receive the full batch; one query "
-                     "here means N+1 per call (bugs #1/#9)",
-            "SD105": " — constraints fire on every save (bug #10)",
+                     "here means N+1 per call",
+            "SD105": " — constraints fire on every save",
             "SD101": " — hoist one batched query out of the loop",
             "SD102": " — assign to the whole recordset / build one batch",
         }.get(code, "")

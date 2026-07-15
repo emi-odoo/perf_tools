@@ -17,17 +17,17 @@ class IndexChecker(Checker):
     explain = {
         "SD301": "Many2one columns are indexed BY DEFAULT — index=False is "
                  "someone turning that off. Every compute, group-by and "
-                 "portal page then seq-scans the table (bug #3b).",
+                 "portal page then seq-scans the table.",
         "SD302": "Heuristic, same-codebase only: the field appears in a "
                  "search domain with an indexable operator but its "
                  "declaration has no index=True. At 40k rows that is a seq "
-                 "scan per lookup, growing linearly forever (bug #3a).",
+                 "scan per lookup, growing linearly forever.",
         "SD303": "('name', 'ilike', x) becomes ILIKE '%x%' — a leading "
                  "wildcard no btree can serve. If fuzzy search is a real "
                  "feature: index='trigram' on the field (pg_trgm GIN index, "
                  "declarable in Odoo 19). Info-level because one scan is "
                  "cheap; the multipliers (name_search per keystroke) are "
-                 "not (bugs #4/#8).",
+                 "not.",
     }
 
     def check_module(self, mod, project, cfg):
@@ -41,7 +41,7 @@ class IndexChecker(Checker):
                         f"{klass.model or klass.class_name}.{f.name}: "
                         f"Many2one is indexed by default — index=False "
                         f"forces a seq scan under every search/compute/"
-                        f"group-by (bug #3b)")
+                        f"group-by")
 
     def check_project(self, project, cfg):
         seen = set()
@@ -55,7 +55,7 @@ class IndexChecker(Checker):
                         "SD303", mod, t.node,
                         f"('{t.fname}', '{t.op}', ...) — leading wildcard "
                         f"defeats btree; declare index='trigram' if fuzzy "
-                        f"search is intended (bug #4)")
+                        f"search is intended")
                 if not cfg.enabled("SD302"):
                     continue
                 if t.dotted or t.op not in INDEXABLE_OPS \
@@ -82,7 +82,7 @@ class IndexChecker(Checker):
                     "SD302", fmod or mod, fnode or t.node,
                     f"{t.model}.{t.fname} is searched (e.g. '{t.op}' at "
                     f"{where}) but declared without index=True — every "
-                    f"lookup seq-scans the table (bug #3a)")
+                    f"lookup seq-scans the table")
 
     @staticmethod
     def _decl_site(project, model, fdecl):

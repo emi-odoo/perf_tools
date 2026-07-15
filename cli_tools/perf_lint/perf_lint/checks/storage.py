@@ -14,15 +14,15 @@ class StorageChecker(Checker):
     }
     explain = {
         "SD401": "attachment=False stores binaries in the table/TOAST: "
-                 "backups balloon and every seq scan (bugs #2/#3/#4) walks "
-                 "the bloat. The default attachment=True uses the "
-                 "filestore. Flipping it back needs a data migration or "
-                 "existing values silently vanish (bug #6).",
+                 "backups balloon and every seq scan walks the bloat. The "
+                 "default attachment=True uses the filestore. Flipping it "
+                 "back needs a data migration or existing values silently "
+                 "vanish.",
         "SD402": "store=True + @api.depends through a One2many/Many2many "
                  "means one change on ANY related record marks the whole "
                  "family for recompute: creating 1 ticket for a partner "
                  "with 1093 tickets rewrites 1094 rows. In a create loop "
-                 "that is O(N²) row rewrites (bug #7). Don't store it, or "
+                 "that is O(N²) row rewrites. Don't store it, or "
                  "aggregate on the other model.",
     }
 
@@ -38,7 +38,7 @@ class StorageChecker(Checker):
                         f"Binary(attachment=False) stores blobs in the "
                         f"table — TOAST bloat, fat backups, slow seq scans; "
                         f"use the default attachment=True (+ migration for "
-                        f"existing rows, bug #6)")
+                        f"existing rows)")
 
     def check_project(self, project, cfg):
         if not cfg.enabled("SD402"):
@@ -63,7 +63,7 @@ class StorageChecker(Checker):
                         f"'{hit}' is a x2many, so one change on any related "
                         f"record marks every sibling for recompute (write "
                         f"amplification, O(N²) under record-by-record "
-                        f"imports, bug #7); don't store it or move the "
+                        f"imports); don't store it or move the "
                         f"aggregate to the other model")
                     break
 
