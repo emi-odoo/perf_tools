@@ -1,7 +1,16 @@
 """SD30x — indexing and domain shapes the planner can't serve."""
+from __future__ import annotations
+
+import ast
+from typing import TYPE_CHECKING, Iterator
+
 from ..astutils import const_str
 from ..constants import INDEXABLE_OPS, LOW_CARDINALITY, X2MANY
+from ..model import FieldDecl, Finding, ModuleCtx, Project
 from ..registry import Checker, register
+
+if TYPE_CHECKING:
+    from ..runner import Config
 
 
 @register
@@ -42,7 +51,8 @@ class IndexChecker(Checker):
                  "on small relations it is fine.",
     }
 
-    def check_module(self, mod, project, cfg):
+    def check_module(self, mod: ModuleCtx, project: Project,
+                     cfg: Config) -> Iterator[Finding]:
         if not cfg.enabled("SD301"):
             return
         for klass in mod.models:
@@ -55,9 +65,10 @@ class IndexChecker(Checker):
                         f"forces a seq scan under every search/compute/"
                         f"group-by")
 
-    def check_project(self, project, cfg):
-        seen = set()
-        seen_dotted = set()
+    def check_project(self, project: Project,
+                      cfg: Config) -> Iterator[Finding]:
+        seen: set[tuple[str | None, str]] = set()
+        seen_dotted: set[tuple[str | None, str]] = set()
         for mod in project.modules:
             for t in mod.domain_terms:
                 if t.dotted and cfg.enabled("SD304"):
@@ -97,7 +108,7 @@ class IndexChecker(Checker):
                     continue
                 if f.ftype == "Many2one":
                     continue  # indexed by default; =False is SD301's job
-                if t.fname in project.unique_cols.get(t.model, set()):
+                if t.fname in project.unique_cols.get(t.model or "", set()):
                     continue  # unique constraint ships its own index
                 seen.add((t.model, t.fname))
                 where = f"{mod.path}:{t.node.lineno}"
@@ -109,7 +120,8 @@ class IndexChecker(Checker):
                     f"lookup seq-scans the table")
 
     @staticmethod
-    def _x2many_hop(project, model, path):
+    def _x2many_hop(project: Project, model: str | None,
+                    path: str) -> str | None:
         """First x2many segment of a dotted domain path, or None."""
         cur = model
         for seg in path.split("."):
@@ -125,7 +137,9 @@ class IndexChecker(Checker):
         return None
 
     @staticmethod
-    def _decl_site(project, model, fdecl):
+    def _decl_site(
+            project: Project, model: str | None, fdecl: FieldDecl,
+    ) -> tuple[ModuleCtx | None, ast.Call | None]:
         for mod in project.modules:
             for klass in mod.models:
                 if klass.model == model and \

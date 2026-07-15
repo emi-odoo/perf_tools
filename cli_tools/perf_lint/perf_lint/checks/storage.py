@@ -1,6 +1,14 @@
 """SD40x — storage and recompute amplification."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Iterator
+
 from ..constants import X2MANY
+from ..model import Finding, ModelClass, ModuleCtx, Project
 from ..registry import Checker, register
+
+if TYPE_CHECKING:
+    from ..runner import Config
 
 
 @register
@@ -26,7 +34,8 @@ class StorageChecker(Checker):
                  "aggregate on the other model.",
     }
 
-    def check_module(self, mod, project, cfg):
+    def check_module(self, mod: ModuleCtx, project: Project,
+                     cfg: Config) -> Iterator[Finding]:
         if not cfg.enabled("SD401"):
             return
         for klass in mod.models:
@@ -40,14 +49,16 @@ class StorageChecker(Checker):
                         f"use the default attachment=True (+ migration for "
                         f"existing rows)")
 
-    def check_project(self, project, cfg):
+    def check_project(self, project: Project,
+                      cfg: Config) -> Iterator[Finding]:
         if not cfg.enabled("SD402"):
             return
         for mod in project.modules:
             for klass in mod.models:
                 yield from self._check_class(mod, klass, project)
 
-    def _check_class(self, mod, klass, project):
+    def _check_class(self, mod: ModuleCtx, klass: ModelClass,
+                     project: Project) -> Iterator[Finding]:
         for f in klass.fields.values():
             compute = f.kw("compute")
             if not isinstance(compute, str) or f.kw("store", False) \
@@ -68,7 +79,8 @@ class StorageChecker(Checker):
                     break
 
     @staticmethod
-    def _x2many_segment(project, model, path):
+    def _x2many_segment(project: Project, model: str | None,
+                        path: str) -> str | None:
         cur = model
         for seg in path.split("."):
             fdecl = project.field(cur, seg)

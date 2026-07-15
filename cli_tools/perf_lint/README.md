@@ -198,7 +198,10 @@ perf_lint/
 python3 -m unittest discover -s tests -v
 ```
 
-No test dependencies — plain stdlib `unittest`. Each test in
+No test dependencies — plain stdlib `unittest`.
+
+The package is fully type-hinted; `mypy perf_lint tests` (config in
+`pyproject.toml`) passes clean. mypy is a dev-only tool, not a dependency. Each test in
 `tests/test_perf_lint.py` writes a small bad-code fixture into a temp
 directory, runs the real `lint()` pipeline over it and asserts the exact
 finding codes, so the suite doubles as a catalog of examples: what each

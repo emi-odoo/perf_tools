@@ -1,11 +1,18 @@
 """SD10x — the N+1 family: a query per iteration instead of one batch."""
+from __future__ import annotations
+
 import ast
+from typing import TYPE_CHECKING, Iterator
 
 from ..astutils import const_str
+from ..model import Finding, ModuleCtx, Project, QueryEvent
 from ..registry import Checker, register
 
+if TYPE_CHECKING:
+    from ..runner import Config
 
-def _id_exclusion_domain(call):
+
+def _id_exclusion_domain(call: ast.Call) -> bool:
     """True if the call's literal domain contains ('id', '!='/'not in', ...)
     — the smell of a hand-rolled uniqueness check."""
     if not (call.args and isinstance(call.args[0], ast.List)):
@@ -63,7 +70,7 @@ class LoopQueryChecker(Checker):
                  "per-record statement is an N+1 like any other.",
     }
 
-    def _classify(self, ev):
+    def _classify(self, ev: QueryEvent) -> str:
         m = ev.method
         if m and m.constrains:
             return "SD105"
@@ -73,18 +80,20 @@ class LoopQueryChecker(Checker):
             return "SD104"
         return "SD101" if ev.kind == "read" else "SD102"
 
-    def check_module(self, mod, project, cfg):
+    def check_module(self, mod: ModuleCtx, project: Project,
+                     cfg: Config) -> Iterator[Finding]:
         for ev in mod.query_events:
             if not ev.in_loop or ev.kind == "flush":
                 continue
             if ev.fname == "create" and ev.batched:
                 continue  # create([...]) in a loop = chunked batching
+            where = ev.method.name if ev.method else "module level"
             if ev.fname == "execute":
                 if cfg.enabled("SD106"):
                     yield self.finding(
                         "SD106", mod, ev.node,
                         f"raw cr.execute() inside a loop in "
-                        f"{ev.method.name}() — fine if it processes a batch "
+                        f"{where}() — fine if it processes a batch "
                         f"per iteration, an N+1 if it runs per record")
                 continue
             specific = self._classify(ev)
@@ -93,7 +102,6 @@ class LoopQueryChecker(Checker):
                         None)
             if not code:
                 continue
-            where = ev.method.name if ev.method else "module level"
             msg = (f"{ev.fname}() runs once per iteration in {where}()"
                    f"{self._context(specific)}")
             if ev.fname == "next_by_code":
@@ -107,7 +115,7 @@ class LoopQueryChecker(Checker):
             yield self.finding(code, mod, ev.node, msg)
 
     @staticmethod
-    def _context(code):
+    def _context(code: str) -> str:
         return {
             "SD103": " — computes are batched over the whole recordset; "
                      "batch with one _read_group instead",
@@ -136,7 +144,8 @@ class FlushInLoopChecker(Checker):
                  "fnames) if an in-loop barrier is genuinely required.",
     }
 
-    def check_module(self, mod, project, cfg):
+    def check_module(self, mod: ModuleCtx, project: Project,
+                     cfg: Config) -> Iterator[Finding]:
         if not cfg.enabled("SD107"):
             return
         for ev in mod.query_events:

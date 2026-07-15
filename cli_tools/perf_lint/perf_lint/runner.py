@@ -6,8 +6,9 @@ import importlib.util
 import os
 import re
 import sys
+from typing import Iterable, Iterator
 
-from .model import Project
+from .model import Finding, ModuleCtx, Project
 from .parsing import analyze_file
 from .registry import CHECKERS
 from .scanner import scan_module
@@ -17,11 +18,12 @@ class Config:
     """Which checks are enabled. Codes match by prefix (flake8-style):
     --ignore SD3 disables all SD3xx checks."""
 
-    def __init__(self, select=None, ignore=None):
+    def __init__(self, select: list[str] | None = None,
+                 ignore: list[str] | None = None) -> None:
         self.select = select or []
         self.ignore = ignore or []
 
-    def enabled(self, code):
+    def enabled(self, code: str) -> bool:
         if self.select and not any(code.startswith(p) for p in self.select):
             return False
         return not any(code.startswith(p) for p in self.ignore)
@@ -30,7 +32,7 @@ class Config:
 NOQA_RE = re.compile(r"#\s*noqa(?::\s*(?P<codes>[A-Z0-9, ]+))?", re.I)
 
 
-def suppressed(finding, lines):
+def suppressed(finding: Finding, lines: list[str]) -> bool:
     """A noqa on ANY physical line of the flagged node suppresses it."""
     last = max(finding.end_line, finding.line)
     for lineno in range(finding.line, min(last, len(lines)) + 1):
@@ -45,7 +47,8 @@ def suppressed(finding, lines):
     return False
 
 
-def iter_py_files(paths, excludes):
+def iter_py_files(paths: Iterable[str],
+                  excludes: list[str]) -> Iterator[str]:
     skip_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv"}
     for path in paths:
         if os.path.isfile(path):
@@ -67,22 +70,24 @@ def iter_py_files(paths, excludes):
                 yield full
 
 
-def load_plugin(path):
+def load_plugin(path: str) -> None:
     """Execute a plugin file; its @register calls enrol extra checkers."""
     spec = importlib.util.spec_from_file_location(
         f"perf_lint_plugin_{os.path.basename(path).removesuffix('.py')}",
         path)
+    assert spec and spec.loader, f"cannot load plugin: {path}"
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
 
-def lint(paths, excludes, cfg):
+def lint(paths: list[str], excludes: list[str],
+         cfg: Config) -> tuple[list[Finding], int]:
     """Analyze paths and run every registered checker.
 
     Returns (findings, n_suppressed)."""
     project = Project()
-    modules = []
+    modules: list[ModuleCtx] = []
     for path in iter_py_files(paths, excludes):
         mod = analyze_file(path)
         if mod:
@@ -91,10 +96,11 @@ def lint(paths, excludes, cfg):
     for mod in modules:  # after project.add: scanning uses the full registry
         scan_module(mod, project)
 
-    findings, n_suppressed = [], 0
+    findings: list[Finding] = []
+    n_suppressed = 0
     lines_by_path = {m.path: m.lines for m in modules}
     for checker in CHECKERS:
-        produced = []
+        produced: list[Finding] = []
         for mod in modules:
             produced.extend(checker.check_module(mod, project, cfg))
         produced.extend(checker.check_project(project, cfg))

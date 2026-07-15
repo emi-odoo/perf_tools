@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field as dc_field
+from typing import Any
+
+#: a pre-collected AST shape: (node, enclosing class, enclosing method)
+ShapeHit = tuple[ast.Call, "ModelClass | None", "MethodInfo | None"]
 
 
 @dataclass
@@ -16,7 +20,7 @@ class Finding:
     message: str
     end_line: int = 0  # last physical line of the flagged node (for noqa)
 
-    def sort_key(self):
+    def sort_key(self) -> tuple[str, int, int, str]:
         return (self.path, self.line, self.col, self.code)
 
 
@@ -24,11 +28,11 @@ class Finding:
 class FieldDecl:
     name: str
     ftype: str
-    node: ast.AST
-    kwargs: dict  # name -> ast node
+    node: ast.Call
+    kwargs: dict[str, ast.expr]
     comodel: str | None = None
 
-    def kw(self, name, default=None):
+    def kw(self, name: str, default: Any = None) -> Any:
         """Constant value of a kwarg; `default` if absent; ... if dynamic."""
         v = self.kwargs.get(name)
         if v is None:
@@ -40,10 +44,10 @@ class FieldDecl:
 
 @dataclass
 class MethodInfo:
-    node: ast.AST
+    node: ast.FunctionDef | ast.AsyncFunctionDef
     name: str
-    depends: list = dc_field(default_factory=list)
-    constrains: list = dc_field(default_factory=list)
+    depends: list[str] = dc_field(default_factory=list)
+    constrains: list[str] = dc_field(default_factory=list)
     is_compute: bool = False
 
 
@@ -52,9 +56,9 @@ class ModelClass:
     node: ast.ClassDef
     class_name: str
     model: str | None  # _name, falling back to _inherit
-    fields: dict  # name -> FieldDecl
-    methods: dict  # name -> MethodInfo
-    unique_cols: set  # columns covered by models.Constraint UNIQUE / UniqueIndex
+    fields: dict[str, FieldDecl]
+    methods: dict[str, MethodInfo]
+    unique_cols: set[str]  # covered by models.Constraint UNIQUE / UniqueIndex
 
 
 @dataclass
@@ -76,8 +80,8 @@ class DomainTerm:
     fname: str  # field name (first segment if dotted)
     dotted: bool
     op: str
-    value: ast.AST
-    node: ast.AST  # the term tuple, for line info
+    value: ast.expr
+    node: ast.Tuple | ast.List  # the term tuple, for line info
     klass: ModelClass | None
     method: MethodInfo | None
 
@@ -86,24 +90,26 @@ class DomainTerm:
 class ModuleCtx:
     path: str
     tree: ast.Module
-    lines: list
-    models: list = dc_field(default_factory=list)
-    query_events: list = dc_field(default_factory=list)
-    domain_terms: list = dc_field(default_factory=list)
-    len_search: list = dc_field(default_factory=list)  # (node, klass, method)
-    filtered_after_search: list = dc_field(default_factory=list)
-    sorted_after_search: list = dc_field(default_factory=list)
+    lines: list[str]
+    models: list[ModelClass] = dc_field(default_factory=list)
+    query_events: list[QueryEvent] = dc_field(default_factory=list)
+    domain_terms: list[DomainTerm] = dc_field(default_factory=list)
+    len_search: list[ShapeHit] = dc_field(default_factory=list)
+    filtered_after_search: list[ShapeHit] = dc_field(default_factory=list)
+    sorted_after_search: list[ShapeHit] = dc_field(default_factory=list)
 
 
 class Project:
     """All analyzed modules plus a cross-file field registry."""
 
-    def __init__(self):
-        self.modules = []
-        self.registry = {}  # model name -> {field name -> FieldDecl}
-        self.unique_cols = {}  # model name -> set of column names
+    def __init__(self) -> None:
+        self.modules: list[ModuleCtx] = []
+        #: model name -> {field name -> FieldDecl}
+        self.registry: dict[str, dict[str, FieldDecl]] = {}
+        #: model name -> set of column names
+        self.unique_cols: dict[str, set[str]] = {}
 
-    def add(self, mod: ModuleCtx):
+    def add(self, mod: ModuleCtx) -> None:
         self.modules.append(mod)
         for klass in mod.models:
             if not klass.model:
@@ -112,7 +118,7 @@ class Project:
             self.unique_cols.setdefault(klass.model, set()).update(
                 klass.unique_cols)
 
-    def field(self, model, name) -> FieldDecl | None:
+    def field(self, model: str | None, name: str) -> FieldDecl | None:
         if not model:
             return None
         return self.registry.get(model, {}).get(name)

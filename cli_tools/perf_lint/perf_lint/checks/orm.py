@@ -1,11 +1,18 @@
 """SD20x — asking the ORM the wrong way."""
+from __future__ import annotations
+
 import ast
+from typing import TYPE_CHECKING, Iterator
 
 from ..constants import SEARCHY
+from ..model import Finding, ModuleCtx, Project
 from ..registry import Checker, register
 
+if TYPE_CHECKING:
+    from ..runner import Config
 
-def _truth_tested(tree):
+
+def _truth_tested(tree: ast.Module) -> Iterator[ast.expr]:
     """Yield expressions whose value is used ONLY as a boolean.
 
     Deliberately conservative: `x or default` and `while (r := search())`
@@ -62,7 +69,8 @@ class OrmMisuseChecker(Checker):
                  "works too and skips creating the recordset.",
     }
 
-    def check_module(self, mod, project, cfg):
+    def check_module(self, mod: ModuleCtx, project: Project,
+                     cfg: Config) -> Iterator[Finding]:
         for ev in mod.query_events:
             if ev.empty_domain and cfg.enabled("SD201"):
                 model = f" of {ev.model}" if ev.model else ""
@@ -88,7 +96,7 @@ class OrmMisuseChecker(Checker):
         if cfg.enabled("SD205"):
             yield from self._existence_tests(mod)
 
-    def _existence_tests(self, mod):
+    def _existence_tests(self, mod: ModuleCtx) -> Iterator[Finding]:
         unlimited = {
             id(ev.node): ev for ev in mod.query_events
             if ev.fname in SEARCHY

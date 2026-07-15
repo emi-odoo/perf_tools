@@ -12,14 +12,25 @@ Built-in checks live in perf_lint.checks; external ones are loaded with
         def check_module(self, mod, project, cfg):
             yield self.finding("X901", mod, some_ast_node)
 """
-from .model import Finding
+from __future__ import annotations
 
-CHECKERS = []
-ALL_CODES = {}  # code -> (name, severity, summary)
-EXPLAIN = {}  # code -> long what/why/fix text
+import ast
+from typing import TYPE_CHECKING, Iterable
+
+from .model import Finding, ModuleCtx, Project
+
+if TYPE_CHECKING:
+    from .runner import Config
+
+#: code -> (kebab-name, severity, one-line summary)
+CodeInfo = tuple[str, str, str]
+
+CHECKERS: list[Checker] = []
+ALL_CODES: dict[str, CodeInfo] = {}
+EXPLAIN: dict[str, str] = {}  # code -> long what/why/fix text
 
 
-def register(cls):
+def register(cls: type[Checker]) -> type[Checker]:
     """Class decorator: instantiate and enrol a Checker subclass."""
     inst = cls()
     CHECKERS.append(inst)
@@ -30,20 +41,23 @@ def register(cls):
 
 class Checker:
     #: code -> (kebab-name, severity, one-line summary)
-    codes = {}
+    codes: dict[str, CodeInfo] = {}
     #: optional: code -> long explanation shown by --explain
-    explain = {}
+    explain: dict[str, str] = {}
 
-    def check_module(self, mod, project, cfg):
+    def check_module(self, mod: ModuleCtx, project: Project,
+                     cfg: Config) -> Iterable[Finding]:
         """Yield Findings for one analyzed file."""
         return ()
 
-    def check_project(self, project, cfg):
+    def check_project(self, project: Project,
+                      cfg: Config) -> Iterable[Finding]:
         """Yield Findings needing the cross-file registry (runs once)."""
         return ()
 
-    def finding(self, code, mod, node, message=None):
+    def finding(self, code: str, mod: ModuleCtx, node: ast.stmt | ast.expr,
+                message: str | None = None) -> Finding:
         name, sev, summary = ALL_CODES[code]
         return Finding(mod.path, node.lineno, node.col_offset + 1,
                        code, name, sev, message or summary,
-                       getattr(node, "end_lineno", node.lineno))
+                       node.end_lineno or node.lineno)

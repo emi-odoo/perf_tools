@@ -10,7 +10,7 @@ from .constants import RELATIONAL
 from .model import FieldDecl, MethodInfo, ModelClass, ModuleCtx
 
 
-def parse_field(name, call) -> FieldDecl | None:
+def parse_field(name: str, call: ast.Call) -> FieldDecl | None:
     func = call.func
     if not (isinstance(func, ast.Attribute)
             and isinstance(func.value, ast.Name)
@@ -26,7 +26,8 @@ def parse_field(name, call) -> FieldDecl | None:
     return FieldDecl(name, ftype, call, kwargs, comodel)
 
 
-def parse_unique_cols(call, declared_fields) -> set:
+def parse_unique_cols(call: ast.Call,
+                      declared_fields: dict[str, FieldDecl]) -> set[str]:
     """Columns covered by models.Constraint('UNIQUE (...)') / UniqueIndex."""
     func = call.func
     if not (isinstance(func, ast.Attribute)
@@ -43,7 +44,7 @@ def parse_unique_cols(call, declared_fields) -> set:
     return words & set(declared_fields)
 
 
-def parse_method(node) -> MethodInfo:
+def parse_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> MethodInfo:
     info = MethodInfo(node, node.name)
     for dec in node.decorator_list:
         if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
@@ -57,10 +58,13 @@ def parse_method(node) -> MethodInfo:
     return info
 
 
-def parse_class(node) -> ModelClass | None:
+def parse_class(node: ast.ClassDef) -> ModelClass | None:
     is_model = any(is_model_base(b) for b in node.bases)
-    name = inherit = None
-    fields, methods, unique = {}, {}, set()
+    name: str | None = None
+    inherit: str | None = None
+    fields: dict[str, FieldDecl] = {}
+    methods: dict[str, MethodInfo] = {}
+    unique: set[str] = set()
     for stmt in node.body:
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
                 and isinstance(stmt.targets[0], ast.Name):
@@ -94,7 +98,7 @@ def parse_class(node) -> ModelClass | None:
                       unique)
 
 
-def analyze_file(path) -> ModuleCtx | None:
+def analyze_file(path: str) -> ModuleCtx | None:
     try:
         with open(path, encoding="utf-8") as fh:
             source = fh.read()

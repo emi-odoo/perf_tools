@@ -11,29 +11,35 @@ from .constants import (
     CHAIN_METHODS, DOMAIN_METHODS, FLUSH_METHODS, PER_RECORD_LAMBDA,
     QUERY_METHODS, RELATIONAL, SEARCHY, WRITE_METHODS,
 )
-from .model import DomainTerm, MethodInfo, ModuleCtx, Project, QueryEvent
+from .model import (
+    DomainTerm, MethodInfo, ModelClass, ModuleCtx, Project, QueryEvent,
+)
+
+#: what a name/expression holds:
+#: ("model" | "record" | "search_result", model name when resolvable)
+Resolved = tuple[str, "str | None"]
 
 
 class FuncScanner(ast.NodeVisitor):
     """Walks one function, tracking which names hold recordsets, which
     statements execute inside a loop, and every ORM query/write call."""
 
-    def __init__(self, mod, project, klass, method):
+    def __init__(self, mod: ModuleCtx, project: Project,
+                 klass: ModelClass | None, method: MethodInfo) -> None:
         self.mod = mod
         self.project = project
         self.klass = klass
         self.method = method
-        self.symbols = {}
+        self.symbols: dict[str, Resolved] = {}
         if klass and klass.model:
             self.symbols["self"] = ("model", klass.model)
         elif klass:
             self.symbols["self"] = ("model", None)
-        self.loops = []
-        self.lambda_loops = set()
+        self.loops: list[ast.AST] = []
+        self.lambda_loops: set[ast.Lambda] = set()
 
     # -- recordset resolution ---------------------------------------------
-    def resolve(self, e, depth=0):
-        """-> ("model" | "record" | "search_result", model_name|None) | None"""
+    def resolve(self, e: ast.AST, depth: int = 0) -> Resolved | None:
         if depth > 8:
             return None
         if isinstance(e, ast.Name):
@@ -76,7 +82,7 @@ class FuncScanner(ast.NodeVisitor):
         return None
 
     # -- loops --------------------------------------------------------------
-    def visit_For(self, node):
+    def visit_For(self, node: ast.For) -> None:
         self.visit(node.iter)  # evaluated once, outside the loop
         kind = self.resolve(node.iter)
         if kind and isinstance(node.target, ast.Name):
@@ -86,14 +92,15 @@ class FuncScanner(ast.NodeVisitor):
             self.visit(stmt)
         self.loops.pop()
 
-    def visit_While(self, node):
+    def visit_While(self, node: ast.While) -> None:
         self.loops.append(node)  # test + body both run per iteration
         self.visit(node.test)
         for stmt in node.body + node.orelse:
             self.visit(stmt)
         self.loops.pop()
 
-    def _visit_comp(self, node, elts):
+    def _visit_comp(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp
+                    | ast.DictComp, elts: list[ast.expr]) -> None:
         for gen in node.generators:
             self.visit(gen.iter)
             kind = self.resolve(gen.iter)
@@ -107,16 +114,18 @@ class FuncScanner(ast.NodeVisitor):
             self.visit(e)
         self.loops.pop()
 
-    def visit_ListComp(self, node):
+    def visit_ListComp(
+            self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp,
+    ) -> None:
         self._visit_comp(node, [node.elt])
 
     visit_SetComp = visit_ListComp
     visit_GeneratorExp = visit_ListComp
 
-    def visit_DictComp(self, node):
+    def visit_DictComp(self, node: ast.DictComp) -> None:
         self._visit_comp(node, [node.key, node.value])
 
-    def visit_Lambda(self, node):
+    def visit_Lambda(self, node: ast.Lambda) -> None:
         if node in self.lambda_loops:  # runs once per record
             self.loops.append(node)
             self.visit(node.body)
@@ -125,7 +134,7 @@ class FuncScanner(ast.NodeVisitor):
             self.generic_visit(node)
 
     # -- assignments ----------------------------------------------------------
-    def visit_Assign(self, node):
+    def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         kind = self.resolve(node.value)
         for t in node.targets:
@@ -138,7 +147,7 @@ class FuncScanner(ast.NodeVisitor):
                 self.visit(t)
 
     # -- calls ------------------------------------------------------------------
-    def visit_Call(self, node):
+    def visit_Call(self, node: ast.Call) -> None:
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in PER_RECORD_LAMBDA:
             for a in list(node.args) + [kw.value for kw in node.keywords]:
@@ -177,14 +186,15 @@ class FuncScanner(ast.NodeVisitor):
                     self._add_event(node, fname, kind, recv[1])
         self.generic_visit(node)
 
-    def _add_event(self, node, fname, kind, model):
-        batched = (fname == "create" and node.args and isinstance(
+    def _add_event(self, node: ast.Call, fname: str, kind: str,
+                   model: str | None) -> None:
+        batched = bool(fname == "create" and node.args and isinstance(
             node.args[0], (ast.List, ast.ListComp, ast.GeneratorExp,
                            ast.Tuple)))
-        empty = (fname in SEARCHY | {"search_read"}
-                 and node.args and isinstance(node.args[0], ast.List)
-                 and not node.args[0].elts
-                 and not any(kw.arg == "limit" for kw in node.keywords))
+        empty = bool(fname in SEARCHY | {"search_read"}
+                     and node.args and isinstance(node.args[0], ast.List)
+                     and not node.args[0].elts
+                     and not any(kw.arg == "limit" for kw in node.keywords))
         self.mod.query_events.append(QueryEvent(
             node, fname, kind, model, bool(self.loops), batched, empty,
             self.klass, self.method))
@@ -192,7 +202,7 @@ class FuncScanner(ast.NodeVisitor):
                 and isinstance(node.args[0], ast.List):
             self._extract_domain(node.args[0], model)
 
-    def _extract_domain(self, domain, model):
+    def _extract_domain(self, domain: ast.List, model: str | None) -> None:
         for term in domain.elts:
             if isinstance(term, (ast.Tuple, ast.List)) \
                     and len(term.elts) == 3:
@@ -204,7 +214,7 @@ class FuncScanner(ast.NodeVisitor):
                         term.elts[2], term, self.klass, self.method))
 
 
-def scan_module(mod: ModuleCtx, project: Project):
+def scan_module(mod: ModuleCtx, project: Project) -> None:
     """Scan every method of every model class, plus module-level functions
     (migration scripts, hooks)."""
     for klass in mod.models:

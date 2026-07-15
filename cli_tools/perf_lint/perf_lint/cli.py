@@ -1,4 +1,6 @@
 """Command line interface."""
+from __future__ import annotations
+
 import argparse
 import sys
 
@@ -7,7 +9,7 @@ from .output import explain, list_checks, render_json, render_text
 from .runner import Config, lint, load_plugin
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="perf_lint",
         description="Static analysis for Odoo ORM performance anti-patterns ",
@@ -39,7 +41,7 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     for p in args.plugin:

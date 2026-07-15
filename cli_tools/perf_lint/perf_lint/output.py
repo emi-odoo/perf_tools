@@ -1,17 +1,25 @@
 """Rendering: text/json reports, --list-checks, --explain."""
+from __future__ import annotations
+
 import json
 import os
 import sys
+from typing import TYPE_CHECKING
 
 from .constants import SEVERITIES
+from .model import Finding
 from .registry import ALL_CODES, EXPLAIN
+
+if TYPE_CHECKING:
+    from .runner import Config
 
 COLORS = {"error": "\033[31m", "warning": "\033[33m", "info": "\033[36m"}
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
 
 
-def render_text(findings, n_suppressed, color):
-    def c(code, text):
+def render_text(findings: list[Finding], n_suppressed: int,
+                color: bool) -> None:
+    def c(code: str, text: str) -> str:
         return f"{code}{text}{RESET}" if color else text
 
     for f in sorted(findings, key=lambda f: f.sort_key()):
@@ -34,14 +42,14 @@ def render_text(findings, n_suppressed, color):
     print(summary)
 
 
-def render_json(findings, n_suppressed):
+def render_json(findings: list[Finding], n_suppressed: int) -> None:
     print(json.dumps({
         "findings": [vars(f) for f in findings],
         "suppressed": n_suppressed,
     }, indent=2))
 
 
-def list_checks(cfg):
+def list_checks(cfg: Config) -> None:
     print(f"{'CODE':<7} {'ON':<4} {'SEVERITY':<9} {'NAME':<32} SUMMARY")
     for code in sorted(ALL_CODES):
         name, sev, summary = ALL_CODES[code]
@@ -49,7 +57,7 @@ def list_checks(cfg):
         print(f"{code:<7} {on:<4} {sev:<9} {name:<32} {summary}")
 
 
-def explain(code):
+def explain(code: str) -> int:
     code = code.upper()
     if code not in ALL_CODES:
         print(f"unknown check: {code}", file=sys.stderr)
