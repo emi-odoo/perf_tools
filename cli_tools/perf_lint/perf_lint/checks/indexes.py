@@ -134,6 +134,8 @@ class IndexChecker(Checker):
     def _order_fields(self, project: Project) -> Iterator[Finding]:
         seen: set[tuple[str | None, str]] = set()
         for mod in project.modules:
+            if mod.is_context:
+                continue
             for klass in mod.models:
                 if not klass.order or klass.order_node is None:
                     continue
@@ -187,6 +189,8 @@ class IndexChecker(Checker):
             project: Project, model: str | None, fdecl: FieldDecl,
     ) -> tuple[ModuleCtx | None, ast.Call | None]:
         for mod in project.modules:
+            if mod.is_context:
+                continue  # fall back to the search site in linted code
             for klass in mod.models:
                 if klass.model == model and \
                         klass.fields.get(fdecl.name) is fdecl:

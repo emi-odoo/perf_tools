@@ -16,6 +16,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -708,6 +709,373 @@ class CleanCodeTests(unittest.TestCase):
         self.assertEqual(n_suppressed, 0)
 
 
+class AddonsPathTests(unittest.TestCase):
+    """--addons-path: registry-only context, never linted.
+
+    The tests below (no __manifest__.py anywhere) exercise the full-crawl
+    fallback; DependencyResolutionTests cover the manifest-driven mode."""
+
+    @staticmethod
+    def _write(directory, name, src):
+        with open(os.path.join(directory, name), "w",
+                  encoding="utf-8") as fh:
+            fh.write(textwrap.dedent(src))
+
+    def test_context_resolves_field_searched_from_linted_code(self):
+        # the field declaration lives in the context tree: SD302 fires but
+        # anchors at the search site (the declaration is not ours to edit)
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as tmp:
+            self._write(ctx, "order.py", """
+                from odoo import fields, models
+
+
+                class Order(models.Model):
+                    _name = "ctx.order"
+
+                    ref = fields.Char()
+            """)
+            self._write(tmp, "service.py", """
+                from odoo import models
+
+
+                class Service(models.Model):
+                    _inherit = "ctx.order"
+
+                    def find(self, code):
+                        return self.env["ctx.order"].search(
+                            [("ref", "=", code)])
+            """)
+            findings, _ = lint([tmp], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+            self.assertTrue(findings[0].path.endswith("service.py"))
+
+    def test_context_files_are_never_reported(self):
+        # blatant findings inside the context tree stay silent
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as tmp:
+            self._write(ctx, "bad.py", """
+                from odoo import fields, models
+
+
+                class Bad(models.Model):
+                    _name = "ctx.bad"
+
+                    photo = fields.Binary(attachment=False)
+
+                    def load_all(self):
+                        return self.env["ctx.bad"].search([])
+            """)
+            self._write(tmp, "clean.py", """
+                from odoo import models
+
+
+                class Clean(models.Model):
+                    _inherit = "ctx.bad"
+            """)
+            findings, _ = lint([tmp], [], Config(), [ctx])
+            self.assertEqual(codes(findings), [])
+
+    def test_context_resolves_x2many_for_sd403(self):
+        # 'line_set' has no *_ids suffix: only the context registry can
+        # reveal it is a One2many
+        ctx_src = """
+            from odoo import fields, models
+
+
+            class Partner(models.Model):
+                _name = "ctx.partner"
+
+                line_set = fields.One2many("ctx.line", "partner_id")
+        """
+        linted_src = """
+            from odoo import fields, models
+
+
+            class PartnerExt(models.Model):
+                _inherit = "ctx.partner"
+
+                first_amount = fields.Float(
+                    related="line_set.amount", store=True)
+        """
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as tmp:
+            self._write(ctx, "partner.py", ctx_src)
+            self._write(tmp, "ext.py", linted_src)
+            without_ctx, _ = lint([tmp], [], Config())
+            self.assertEqual(codes(without_ctx), [])
+            with_ctx, _ = lint([tmp], [], Config(), [ctx])
+            self.assertEqual(codes(with_ctx), ["SD403"])
+            self.assertTrue(with_ctx[0].path.endswith("ext.py"))
+
+
+class DependencyResolutionTests(unittest.TestCase):
+    """--addons-path with manifests: only transitive `depends` are parsed."""
+
+    # a context addon declaring one model with one unindexed Char
+    CTX_MODEL = """
+        from odoo import fields, models
+
+
+        class M(models.Model):
+            _name = "{model}"
+
+            {field} = fields.Char()
+    """
+    # a linted addon searching that field (SD302 bait when resolvable)
+    SEARCHER = """
+        from odoo import models
+
+
+        class S(models.Model):
+            _name = "target.model"
+
+            def find(self, code):
+                return self.env["{model}"].search(
+                    [("{field}", "=", code)])
+    """
+
+    @staticmethod
+    def _addon(root, name, depends=(), files=None):
+        d = os.path.join(root, name)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "__manifest__.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(repr({"name": name, "depends": list(depends)}))
+        for fname, src in (files or {}).items():
+            src = textwrap.dedent(src)
+            compile(src, fname, "exec")  # broken fixture must fail the test
+            with open(os.path.join(d, fname), "w", encoding="utf-8") as fh:
+                fh.write(src)
+        return d
+
+    def _ctx_addon(self, root, name, model, depends=()):
+        return self._addon(root, name, depends, {
+            "models.py": self.CTX_MODEL.format(model=model, field="foo")})
+
+    def test_only_declared_dependencies_are_parsed(self):
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            self._ctx_addon(ctx, "dep_a", "ctx.a")
+            self._ctx_addon(ctx, "unrelated", "ctx.u")
+            target = self._addon(work, "my_addon", ["dep_a"], {
+                "models.py": (
+                    textwrap.dedent(
+                        self.SEARCHER.format(model="ctx.a", field="foo"))
+                    + textwrap.dedent("""
+                        class S2(models.Model):
+                            _name = "target.other"
+
+                            def find_u(self, code):
+                                return self.env["ctx.u"].search(
+                                    [("foo", "=", code)])
+                    """)),
+            })
+            findings, _ = lint([target], [], Config(), [ctx])
+            # ctx.a.foo resolved via dep_a -> SD302; ctx.u.foo stays
+            # unknown because `unrelated` is not a dependency
+            self.assertEqual(codes(findings), ["SD302"])
+            self.assertIn("ctx.a.foo", findings[0].message)
+
+    def test_transitive_dependencies_are_parsed(self):
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            self._ctx_addon(ctx, "dep_a", "ctx.a", depends=["dep_b"])
+            self._ctx_addon(ctx, "dep_b", "ctx.b")
+            target = self._addon(work, "my_addon", ["dep_a"], {
+                "models.py": self.SEARCHER.format(model="ctx.b",
+                                                  field="foo")})
+            findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+
+    def test_missing_dependency_warns_on_stderr(self):
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            self._ctx_addon(ctx, "dep_a", "ctx.a")
+            target = self._addon(work, "my_addon", ["dep_a", "ghost"], {
+                "models.py": self.SEARCHER.format(model="ctx.a",
+                                                  field="foo")})
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+            self.assertIn("'ghost' not found", err.getvalue())
+
+    def test_base_is_an_implicit_dependency(self):
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            self._ctx_addon(ctx, "base", "res.thing")
+            target = self._addon(work, "my_addon", [], {
+                "models.py": self.SEARCHER.format(model="res.thing",
+                                                  field="foo")})
+            findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+
+    def test_sibling_addons_of_the_target_resolve(self):
+        # deps living NEXT TO the target (custom/OCA folder) are found
+        # even though their directory is not in --addons-path
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            self._ctx_addon(work, "sibling_dep", "ctx.s")
+            target = self._addon(work, "my_addon", ["sibling_dep"], {
+                "models.py": self.SEARCHER.format(model="ctx.s",
+                                                  field="foo")})
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+            self.assertNotIn("not found", err.getvalue())
+
+    def test_sibling_addon_shadows_context_addon_with_same_name(self):
+        # the local copy of a module wins over one in the explicit trees
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            # context copy declares the field WITH an index...
+            self._addon(ctx, "dep_a", [], {"models.py": """
+                from odoo import fields, models
+
+
+                class M(models.Model):
+                    _name = "ctx.a"
+
+                    foo = fields.Char(index=True)
+            """})
+            # ...the local sibling copy does not: it must be the one used
+            self._ctx_addon(work, "dep_a", "ctx.a")
+            target = self._addon(work, "my_addon", ["dep_a"], {
+                "models.py": self.SEARCHER.format(model="ctx.a",
+                                                  field="foo")})
+            findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+
+    def test_addon_nested_in_a_sibling_project_is_ignored(self):
+        # the target's parent may hold OTHER projects: an addon buried
+        # inside one must neither resolve a dependency nor shadow the
+        # explicit --addons-path trees
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            # dep_a exists in the explicit context WITH an index...
+            self._addon(ctx, "dep_a", [], {"models.py": """
+                from odoo import fields, models
+
+
+                class M(models.Model):
+                    _name = "ctx.a"
+
+                    foo = fields.Char(index=True)
+            """})
+            # ...and a stale copy (no index) sits nested in another
+            # project under the same parent as the target
+            self._ctx_addon(os.path.join(work, "other_project"),
+                            "dep_a", "ctx.a")
+            # a genuinely-nested dependency is not found either
+            self._ctx_addon(os.path.join(work, "other_project"),
+                            "nested_dep", "ctx.n")
+            target = self._addon(work, "my_addon",
+                                 ["dep_a", "nested_dep"], {
+                "models.py": self.SEARCHER.format(model="ctx.a",
+                                                  field="foo")})
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                findings, _ = lint([target], [], Config(), [ctx])
+            # the indexed ctx copy of dep_a wins: foo is indexed -> clean
+            self.assertEqual(codes(findings), [])
+            self.assertIn("'nested_dep' not found", err.getvalue())
+
+    def test_project_config_declares_local_addons_paths(self):
+        # mirrors a real project: odools.toml at the root declares group
+        # folders (addons/community, addons/edi); deps of the linted
+        # addons/edi/* live in addons/community, NOT next to the targets
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            proj = os.path.join(work, "proj")
+            community = os.path.join(proj, "addons", "community")
+            edi = os.path.join(proj, "addons", "edi")
+            os.makedirs(proj)
+            with open(os.path.join(proj, "odools.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(textwrap.dedent("""\
+                    [[config]]
+                    name = "proj"
+                    odoo_path = "/opt/odoo"
+                    addons_paths = [
+                        "./addons/community",
+                        "./addons/edi",
+                        "/opt/odoo-addons/enterprise",
+                    ]
+                """))
+            self._ctx_addon(community, "queue_job", "queue.job")
+            target = self._addon(edi, "edi_account", ["queue_job"], {
+                "models.py": self.SEARCHER.format(model="queue.job",
+                                                  field="foo")})
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+            self.assertNotIn("not found", err.getvalue())
+
+    def test_odoo_conf_declares_local_addons_paths(self):
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            proj = os.path.join(work, "proj")
+            os.makedirs(proj)
+            with open(os.path.join(proj, "odoo.conf"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("[options]\naddons_path = ./extra, /opt/gone\n")
+            self._ctx_addon(os.path.join(proj, "extra"), "dep_a", "ctx.a")
+            target = self._addon(os.path.join(proj, "mods"), "my_addon",
+                                 ["dep_a"], {
+                "models.py": self.SEARCHER.format(model="ctx.a",
+                                                  field="foo")})
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+            self.assertNotIn("not found", err.getvalue())
+
+    def test_toml_fallback_parser_without_tomllib(self):
+        # 3.10 has no tomllib: the string-scraping fallback must agree
+        from perf_lint.context import _toml_addons_paths
+        text = ('[[config]]\nname = "x"\n'
+                'addons_paths = [\n    "./a",\n    \'/opt/b\',\n]\n')
+        with unittest.mock.patch.dict(sys.modules, {"tomllib": None}):
+            self.assertEqual(_toml_addons_paths(text), ["./a", "/opt/b"])
+        self.assertEqual(_toml_addons_paths(text), ["./a", "/opt/b"])
+
+    def test_linting_a_subfolder_walks_up_to_the_manifest(self):
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            self._ctx_addon(ctx, "dep_a", "ctx.a")
+            self._ctx_addon(ctx, "unrelated", "ctx.u")
+            target = self._addon(work, "my_addon", ["dep_a"])
+            models_dir = os.path.join(target, "models")
+            os.makedirs(models_dir)
+            AddonsPathTests._write(
+                models_dir, "service.py",
+                self.SEARCHER.format(model="ctx.a", field="foo"))
+            # lint only the subfolder: deps still come from ../__manifest__
+            findings, _ = lint([models_dir], [], Config(), [ctx])
+            self.assertEqual(codes(findings), ["SD302"])
+
+    def test_linted_field_redefinition_wins_over_context(self):
+        # the target re-declares ctx.a.foo WITH an index: no SD302 even
+        # though the context declaration has none (dependency order)
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as work:
+            self._ctx_addon(ctx, "dep_a", "ctx.a")
+            target = self._addon(work, "my_addon", ["dep_a"], {
+                "models.py": """
+                    from odoo import fields, models
+
+
+                    class A(models.Model):
+                        _inherit = "ctx.a"
+
+                        foo = fields.Char(index=True)
+
+                        def find(self, code):
+                            return self.env["ctx.a"].search(
+                                [("foo", "=", code)])
+                """})
+            findings, _ = lint([target], [], Config(), [ctx])
+            self.assertEqual(codes(findings), [])
+
+
 class CliTests(unittest.TestCase):
     def _tmp_bad_addon(self, tmp):
         path = os.path.join(tmp, "models.py")
@@ -754,6 +1122,88 @@ class CliTests(unittest.TestCase):
             self.assertEqual(finding["code"], "SD201")
             self.assertEqual(finding["severity"], "warning")
             self.assertTrue(finding["path"].endswith("models.py"))
+
+    def test_severity_filter_hides_other_classes(self):
+        # SD201 is a warning: filtering to error hides it AND exit code
+        # follows what is shown, not what was found
+        with tempfile.TemporaryDirectory() as tmp:
+            self._tmp_bad_addon(tmp)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(main([tmp, "--severity", "error"]), 0)
+            self.assertNotIn("SD201", out.getvalue())
+
+    def test_severity_filter_keeps_matching_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._tmp_bad_addon(tmp)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(main([tmp, "--severity", "warning"]), 1)
+            self.assertIn("SD201", out.getvalue())
+
+    def test_severity_unknown_value_exits_2(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main([".", "--severity", "fatal"]), 2)
+        self.assertIn("unknown severity", err.getvalue())
+
+    def test_addons_path_flag_comma_separated(self):
+        with tempfile.TemporaryDirectory() as ctx, \
+                tempfile.TemporaryDirectory() as tmp:
+            AddonsPathTests._write(ctx, "order.py", """
+                from odoo import fields, models
+
+
+                class Order(models.Model):
+                    _name = "ctx.order"
+
+                    ref = fields.Char()
+            """)
+            AddonsPathTests._write(tmp, "service.py", """
+                from odoo import models
+
+
+                class Service(models.Model):
+                    _inherit = "ctx.order"
+
+                    def find(self, code):
+                        return self.env["ctx.order"].search(
+                            [("ref", "=", code)])
+            """)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                main([tmp, "--addons-path", f"{ctx},{ctx}",
+                      "--fail-on", "never"])
+            self.assertIn("SD302", out.getvalue())
+
+    def test_addons_path_expands_mid_word_tilde(self):
+        # the shell only expands the FIRST ~ of "~/a,~/b"; the CLI must
+        # expanduser every entry
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as tmp:
+            ctx = os.path.join(home, "ctx")
+            os.makedirs(ctx)
+            AddonsPathTests._write(ctx, "order.py", """
+                from odoo import fields, models
+
+
+                class Order(models.Model):
+                    _name = "ctx.order"
+
+                    ref = fields.Char()
+            """)
+            AddonsPathTests._write(tmp, "service.py", """
+                from odoo import models
+
+
+                class Service(models.Model):
+                    _inherit = "ctx.order"
+
+                    def find(self, code):
+                        return self.env["ctx.order"].search(
+                            [("ref", "=", code)])
+            """)
+            with unittest.mock.patch.dict(os.environ, {"HOME": home}):
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    main([tmp, "--addons-path", "~/ctx,~/ctx",
+                          "--fail-on", "never"])
+            self.assertIn("SD302", out.getvalue())
 
     def test_explain_unknown_code_exits_2(self):
         with contextlib.redirect_stderr(io.StringIO()):

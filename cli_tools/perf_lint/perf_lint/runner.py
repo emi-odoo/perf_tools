@@ -8,6 +8,7 @@ import re
 import sys
 from typing import Iterable, Iterator
 
+from .context import context_addon_dirs
 from .model import Finding, ModuleCtx, Project
 from .parsing import analyze_file
 from .registry import CHECKERS
@@ -81,18 +82,34 @@ def load_plugin(path: str) -> None:
     spec.loader.exec_module(module)
 
 
-def lint(paths: list[str], excludes: list[str],
-         cfg: Config) -> tuple[list[Finding], int]:
+def lint(paths: list[str], excludes: list[str], cfg: Config,
+         context_paths: list[str] | None = None) -> tuple[list[Finding], int]:
     """Analyze paths and run every registered checker.
 
-    Returns (findings, n_suppressed)."""
+    `context_paths` (--addons-path) feed the cross-file registry so
+    comodels/indexes/x2many segments resolve, but are never scanned and
+    never reported on. Only the addons the targets transitively depend on
+    (per __manifest__.py) are parsed; without a target manifest the whole
+    context tree is. Returns (findings, n_suppressed)."""
     project = Project()
     modules: list[ModuleCtx] = []
     for path in iter_py_files(paths, excludes):
         mod = analyze_file(path)
         if mod:
             modules.append(mod)
-            project.add(mod)
+    seen = {m.path for m in modules}
+    if context_paths:
+        for path in iter_py_files(
+                context_addon_dirs(paths, context_paths), excludes):
+            if path in seen:  # lint target, or overlapping context dirs
+                continue
+            seen.add(path)
+            ctx = analyze_file(path)
+            if ctx:
+                ctx.is_context = True
+                project.add(ctx)
+    for mod in modules:  # added after the context: linted field
+        project.add(mod)  # redefinitions override context declarations
     for mod in modules:  # after project.add: scanning uses the full registry
         scan_module(mod, project)
 
@@ -105,9 +122,11 @@ def lint(paths: list[str], excludes: list[str],
             produced.extend(checker.check_module(mod, project, cfg))
         produced.extend(checker.check_project(project, cfg))
         for f in produced:
+            if f.path not in lines_by_path:
+                continue  # anchored in a context (registry-only) file
             if not cfg.enabled(f.code):
                 continue
-            if suppressed(f, lines_by_path.get(f.path, [])):
+            if suppressed(f, lines_by_path[f.path]):
                 n_suppressed += 1
                 continue
             findings.append(f)

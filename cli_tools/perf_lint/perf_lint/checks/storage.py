@@ -63,6 +63,8 @@ class StorageChecker(Checker):
         if not (cfg.enabled("SD402") or cfg.enabled("SD403")):
             return
         for mod in project.modules:
+            if mod.is_context:
+                continue
             for klass in mod.models:
                 yield from self._check_class(mod, klass, project, cfg)
 

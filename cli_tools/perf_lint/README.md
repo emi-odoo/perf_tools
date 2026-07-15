@@ -42,12 +42,46 @@ perf-lint . --select SD1              # enable ONLY the SD1xx family
 perf-lint . --exclude "*/tests/*"     # skip paths (repeatable)
 perf-lint . --format json             # machine-readable output
 perf-lint . --fail-on error           # exit 1 only on errors
+perf-lint . --severity error          # report only one severity class
+perf-lint my_addon/ --addons-path ~/odoo/addons,~/enterprise
+                                      # context for cross-file resolution
 perf-lint . --plugin my_checks.py     # load external checkers
 ```
 
 **Lint whole directories, not single files.** The cross-file checks
-(SD302, SD402) need to see every model definition to resolve comodels,
-indexes and unique constraints; linting one file at a time blinds them.
+(SD302, SD304, SD305, SD402, SD403) need to see every model definition to
+resolve comodels, indexes and unique constraints; linting one file at a
+time blinds them.
+
+**`--addons-path`** widens that view without widening the report: the
+listed directories (comma-separated, repeatable — same convention as
+Odoo's own `--addons-path`) are parsed into the model/field registry so
+fields inherited from other addons resolve, but those files are never
+scanned for findings and never appear in the output. When a finding would
+anchor at a declaration inside the context (e.g. SD302 on a core field
+your addon searches), it re-anchors at the usage site in *your* code —
+or is dropped when there is no such site.
+
+Not everything under the context paths is parsed. The lint targets'
+`__manifest__.py` files (found by walking down through the target
+directories, and *up* from them — linting `my_addon/models/` still finds
+`my_addon`'s manifest) supply a `depends` list, which is expanded
+transitively against the addons found recursively under the context
+paths; only those addon directories feed the registry. The directory
+holding each target addon acts as one more implicit addons-path entry,
+because dependencies routinely live next to the target in the same
+custom/OCA folder — but only its *direct* children count (the flat
+layout Odoo expects), so a same-named addon buried in an unrelated
+project under that parent can't shadow the real trees, while a true
+sibling (e.g. your local fork of an OCA module) deliberately does.
+`base` is always
+included when present (every module implicitly depends on it), a
+dependency missing from the context tree gets one stderr warning, and a
+field redefined by a linted addon overrides the context declaration —
+so adding `index=True` via `_inherit` silences SD302 as it should.
+When no manifest exists in or above the targets, the whole context tree
+is parsed instead: a full crawl beats silently losing the registry.
+Manifests are read with `ast.literal_eval` — never executed.
 
 ### Options
 
@@ -56,6 +90,8 @@ indexes and unique constraints; linting one file at a time blinds them.
 | `--select PREFIXES` | comma-separated code prefixes to enable *exclusively* (`--select SD1` = only SD1xx) |
 | `--ignore PREFIXES` | comma-separated code prefixes to disable (`--ignore SD3` kills all SD3xx) |
 | `--exclude GLOB` | path pattern to skip — substring or glob, repeatable |
+| `--severity CLASSES` | comma-separated severity classes to report (`--severity error` or `--severity warning,error`); the exit code follows what is *shown* |
+| `--addons-path PATHS` | comma-separated directories parsed for model/field context only — never linted, never reported on; repeatable |
 | `--plugin FILE` | Python file with extra `@register`'d checkers, repeatable |
 | `--format text\|json` | output format (default `text`) |
 | `--fail-on info\|warning\|error\|never` | minimum severity that makes the exit code 1 (default `warning`) |
@@ -127,12 +163,16 @@ version of any of them.
 | SD203 | len-search | warning | `len(search(...))` — use `search_count()` / `_read_group` |
 | SD204 | sorted-after-search | info | `.sorted()` on a `search()` result — the sort belongs in `order=` |
 | SD205 | search-for-existence | warning | `search()` result used only as a truth test — add `limit=1` |
+| SD206 | sliced-search | warning | `search(...)[0]` / `[:N]` on an unlimited search — every row fetched to keep N; pass `limit=` |
+| SD207 | python-agg-after-search | warning | `sum()`/`max()`/`min()` over `mapped()` on a `search()` result — `read_group` returns the aggregate in one query |
 | SD301 | index-disabled | warning | `Many2one(index=False)` |
 | SD302 | unindexed-searched-field | warning | field used in a literal search domain but declared without `index=True` (cross-file; skips Selection/Boolean, non-stored compute/related, and unique-constraint columns) |
 | SD303 | ilike-domain | info | `like`/`ilike` in domains, unless the field has `index='trigram'` |
 | SD304 | dotted-domain-x2many | info | dotted domain path through a One2many/Many2many — nested sub-select over the whole relation |
+| SD305 | order-unindexed-field | warning | `_order` sorts on a field declared without `index=True` — every default list view pays a full sort (cross-file, same skip-list as SD302) |
 | SD401 | binary-in-table | warning | `fields.Binary(attachment=False)` |
 | SD402 | stored-compute-x2many-depends | error | `store=True` compute whose `@api.depends` path traverses a One2many/Many2many — a recompute grenade |
+| SD403 | stored-related-x2many | error | `related=` with `store=True` whose path traverses a One2many/Many2many — same grenade, framework-written |
 
 Loop findings classify to the most specific applicable code
 (SD103/104/105 by context) and fall back to SD101/SD102 when the specific
@@ -181,15 +221,16 @@ perf_lint/
 ├── model.py        # dataclasses: Finding, FieldDecl, MethodInfo, ModelClass,
 │                   #   QueryEvent, DomainTerm, ModuleCtx; class Project
 ├── parsing.py      # pass 1: models, fields, decorators → registry
+├── context.py      # --addons-path: manifest deps → context addon dirs
 ├── scanner.py      # pass 2: recordset dataflow + loop-aware query events
 ├── registry.py     # Checker base class, @register, ALL_CODES, EXPLAIN
 ├── runner.py       # toggles, noqa, file discovery, plugins, lint()
 ├── output.py       # text/json rendering, --list-checks, --explain
 └── checks/
-    ├── loops.py    # SD101-106
-    ├── orm.py      # SD201-203
-    ├── indexes.py  # SD301-303
-    └── storage.py  # SD401-402
+    ├── loops.py    # SD101-107
+    ├── orm.py      # SD201-207
+    ├── indexes.py  # SD301-305
+    └── storage.py  # SD401-403
 ```
 
 ## Tests
@@ -304,7 +345,8 @@ multi-line statement.
 | `mod.models` | list of `ModelClass` — parsed Odoo classes with `.model` (the `_name`/`_inherit`), `.fields` (name → `FieldDecl`), `.methods` (name → `MethodInfo`), `.unique_cols` |
 | `mod.query_events` | list of `QueryEvent` — every ORM read/write call, with `.fname`, `.kind` (`"read"`/`"write"`), `.model`, `.in_loop`, `.batched`, `.empty_domain`, and the enclosing `.klass`/`.method` |
 | `mod.domain_terms` | list of `DomainTerm` — every `(field, op, value)` triple from literal search domains, with the resolved `.model` |
-| `mod.len_search`, `mod.filtered_after_search`, `mod.sorted_after_search` | pre-collected `(node, klass, method)` tuples for those specific shapes |
+| `mod.len_search`, `mod.filtered_after_search`, `mod.sorted_after_search`, `mod.search_slice`, `mod.agg_over_search` | pre-collected `(node, klass, method)` tuples for those specific shapes |
+| `mod.is_context` | `True` for registry-only modules from `--addons-path` — project-level checks should skip these when iterating `project.modules` (findings anchored in them are dropped by the runner anyway) |
 
 **`project` — the cross-file `Project`:**
 

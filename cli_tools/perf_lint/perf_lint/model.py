@@ -93,6 +93,9 @@ class ModuleCtx:
     path: str
     tree: ast.Module
     lines: list[str]
+    #: registry-only module from --addons-path: feeds field/model resolution
+    #: but is never scanned and never anchors a finding
+    is_context: bool = False
     models: list[ModelClass] = dc_field(default_factory=list)
     query_events: list[QueryEvent] = dc_field(default_factory=list)
     domain_terms: list[DomainTerm] = dc_field(default_factory=list)

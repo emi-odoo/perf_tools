@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from .constants import SEVERITIES, SEV_RANK
@@ -26,6 +27,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exclude", action="append", default=[],
                         metavar="GLOB", help="path patterns to skip "
                         "(substring or glob, repeatable)")
+    parser.add_argument("--severity", default="",
+                        help="comma-separated severities to report "
+                             "(info,warning,error); default: all")
+    parser.add_argument("--addons-path", action="append", default=[],
+                        metavar="PATHS",
+                        help="comma-separated directories parsed for model/"
+                             "field context (registry only, never linted); "
+                             "repeatable")
     parser.add_argument("--plugin", action="append", default=[],
                         metavar="FILE", help="python file with extra "
                         "@register'ed checkers (repeatable)")
@@ -58,7 +67,22 @@ def main(argv: list[str] | None = None) -> int:
         list_checks(cfg)
         return 0
 
-    findings, n_suppressed = lint(args.paths, args.exclude, cfg)
+    severities = {s.strip().lower() for s in args.severity.split(",")
+                  if s.strip()}
+    unknown = severities - set(SEVERITIES)
+    if unknown:
+        print(f"perf_lint: unknown severity: {', '.join(sorted(unknown))} "
+              f"(choose from {', '.join(SEVERITIES)})", file=sys.stderr)
+        return 2
+
+    # the shell only tilde-expands the first entry of "~/a,~/b" (a ~ after
+    # the comma is mid-word), so expand here
+    context = [os.path.expanduser(p.strip()) for chunk in args.addons_path
+               for p in chunk.split(",") if p.strip()]
+
+    findings, n_suppressed = lint(args.paths, args.exclude, cfg, context)
+    if severities:
+        findings = [f for f in findings if f.severity in severities]
 
     if args.format == "json":
         render_json(findings, n_suppressed)
