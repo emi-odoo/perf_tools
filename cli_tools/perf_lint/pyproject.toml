@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perf-lint"
+version = "0.1.0"
+description = "Static analysis for Odoo ORM performance anti-pattern"
+requires-python = ">=3.10"
+
+[project.scripts]
+perf-lint = "perf_lint.cli:main"
+
+# explicit list: the repo root also holds Odoo addon directories, which must
+# not be picked up by setuptools auto-discovery
+[tool.setuptools]
+packages = ["perf_lint", "perf_lint.checks"]
