@@ -6,7 +6,7 @@ from dataclasses import dataclass, field as dc_field
 from typing import Any
 
 #: a pre-collected AST shape: (node, enclosing class, enclosing method)
-ShapeHit = tuple[ast.Call, "ModelClass | None", "MethodInfo | None"]
+ShapeHit = tuple[ast.expr, "ModelClass | None", "MethodInfo | None"]
 
 
 @dataclass
@@ -59,6 +59,8 @@ class ModelClass:
     fields: dict[str, FieldDecl]
     methods: dict[str, MethodInfo]
     unique_cols: set[str]  # covered by models.Constraint UNIQUE / UniqueIndex
+    order: str | None = None  # literal _order, when declared
+    order_node: ast.stmt | None = None  # the _order assignment, for line info
 
 
 @dataclass
@@ -97,6 +99,8 @@ class ModuleCtx:
     len_search: list[ShapeHit] = dc_field(default_factory=list)
     filtered_after_search: list[ShapeHit] = dc_field(default_factory=list)
     sorted_after_search: list[ShapeHit] = dc_field(default_factory=list)
+    search_slice: list[ShapeHit] = dc_field(default_factory=list)
+    agg_over_search: list[ShapeHit] = dc_field(default_factory=list)
 
 
 class Project:

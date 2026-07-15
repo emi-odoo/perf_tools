@@ -9,7 +9,7 @@ import ast
 from .astutils import const_str, is_cursor, is_env
 from .constants import (
     CHAIN_METHODS, DOMAIN_METHODS, FLUSH_METHODS, PER_RECORD_LAMBDA,
-    QUERY_METHODS, RELATIONAL, SEARCHY, WRITE_METHODS,
+    PY_AGGREGATES, QUERY_METHODS, RELATIONAL, SEARCHY, WRITE_METHODS,
 )
 from .model import (
     DomainTerm, MethodInfo, ModelClass, ModuleCtx, Project, QueryEvent,
@@ -18,6 +18,24 @@ from .model import (
 #: what a name/expression holds:
 #: ("model" | "record" | "search_result", model name when resolvable)
 Resolved = tuple[str, "str | None"]
+
+
+def searchy_call(e: ast.AST, depth: int = 0) -> ast.Call | None:
+    """The search()/search_fetch() call at the root of a chain, or None.
+
+    Follows chain methods so `self.search(d).sudo()` yields the search."""
+    if depth > 8 or not isinstance(e, ast.Call) \
+            or not isinstance(e.func, ast.Attribute):
+        return None
+    if e.func.attr in SEARCHY:
+        return e
+    if e.func.attr in CHAIN_METHODS:
+        return searchy_call(e.func.value, depth + 1)
+    return None
+
+
+def _has_limit(call: ast.Call) -> bool:
+    return any(kw.arg == "limit" for kw in call.keywords)
 
 
 class FuncScanner(ast.NodeVisitor):
@@ -37,6 +55,8 @@ class FuncScanner(ast.NodeVisitor):
             self.symbols["self"] = ("model", None)
         self.loops: list[ast.AST] = []
         self.lambda_loops: set[ast.Lambda] = set()
+        #: name -> the search() call it was assigned from (for limit= checks)
+        self.search_origin: dict[str, ast.Call] = {}
 
     # -- recordset resolution ---------------------------------------------
     def resolve(self, e: ast.AST, depth: int = 0) -> Resolved | None:
@@ -137,14 +157,49 @@ class FuncScanner(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         kind = self.resolve(node.value)
+        origin = (searchy_call(node.value)
+                  if kind and kind[0] == "search_result" else None)
         for t in node.targets:
             if isinstance(t, ast.Name):
                 if kind:
                     self.symbols[t.id] = kind
                 else:
                     self.symbols.pop(t.id, None)
+                if origin:
+                    self.search_origin[t.id] = origin
+                else:
+                    self.search_origin.pop(t.id, None)
             else:
                 self.visit(t)
+
+    # -- subscripts -----------------------------------------------------------
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        self._check_search_slice(node)
+        self.generic_visit(node)
+
+    def _check_search_slice(self, node: ast.Subscript) -> None:
+        """Collect search(...)[0] / search(...)[:N] over an unlimited
+        search — the rows were all fetched just to keep the first few."""
+        if isinstance(node.value, ast.Subscript):
+            return  # search()[:1][0]: the inner subscript already hit
+        idx = node.slice
+        first_index = (isinstance(idx, ast.Constant)
+                       and type(idx.value) is int and idx.value == 0)
+        head_slice = (isinstance(idx, ast.Slice)
+                      and idx.lower is None and idx.step is None
+                      and isinstance(idx.upper, ast.Constant)
+                      and type(idx.upper.value) is int)
+        if not (first_index or head_slice):
+            return
+        recv = self.resolve(node.value)
+        if not recv or recv[0] != "search_result":
+            return
+        call = searchy_call(node.value)
+        if call is None and isinstance(node.value, ast.Name):
+            call = self.search_origin.get(node.value.id)
+        if call is None or _has_limit(call):
+            return  # unknown origin or already limited: stay quiet
+        self.mod.search_slice.append((node, self.klass, self.method))
 
     # -- calls ------------------------------------------------------------------
     def visit_Call(self, node: ast.Call) -> None:
@@ -160,6 +215,17 @@ class FuncScanner(ast.NodeVisitor):
                     and a.func.attr in SEARCHY
                     and self.resolve(a.func.value)):
                 self.mod.len_search.append((node, self.klass, self.method))
+
+        if isinstance(func, ast.Name) and func.id in PY_AGGREGATES \
+                and node.args:
+            a = node.args[0]
+            if (isinstance(a, ast.Call) and isinstance(a.func, ast.Attribute)
+                    and a.func.attr == "mapped" and a.args
+                    and const_str(a.args[0])):
+                recv = self.resolve(a.func.value)
+                if recv and recv[0] == "search_result":
+                    self.mod.agg_over_search.append(
+                        (node, self.klass, self.method))
 
         if isinstance(func, ast.Attribute):
             fname = func.attr

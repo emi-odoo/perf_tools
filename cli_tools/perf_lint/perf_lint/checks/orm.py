@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Iterator
 
+from ..astutils import const_str
 from ..constants import SEARCHY
 from ..model import Finding, ModuleCtx, Project
 from ..registry import Checker, register
@@ -46,6 +47,12 @@ class OrmMisuseChecker(Checker):
                   "order="),
         "SD205": ("search-for-existence", "warning",
                   "search() used as a truth test without limit=1"),
+        "SD206": ("sliced-search", "warning",
+                  "search(...)[0] / [:N] — fetch everything, keep N; pass "
+                  "limit= instead"),
+        "SD207": ("python-agg-after-search", "warning",
+                  "sum()/max()/min() over mapped() on a search() result — "
+                  "read_group does it in one query"),
     }
     explain = {
         "SD201": "search([]) with no domain and no limit loads the whole "
@@ -67,6 +74,16 @@ class OrmMisuseChecker(Checker):
                  "ask 'is there at least one?'. With limit=1 the database "
                  "stops at the first hit. search_count(domain, limit=1) "
                  "works too and skips creating the recordset.",
+        "SD206": "Slicing or indexing a search() result keeps N records "
+                 "but the query already fetched ALL of them. limit= (with "
+                 "order= when the first match must be a specific one) "
+                 "makes PostgreSQL stop early — often straight off an "
+                 "index. Only unlimited searches are flagged.",
+        "SD207": "sum(records.mapped('amount')) loads every matching row "
+                 "into the cache to reduce them to one number. "
+                 "read_group/_read_group returns the aggregate straight "
+                 "from SQL — one query, no rows materialized, and it "
+                 "batches over many parents with groupby=.",
     }
 
     def check_module(self, mod: ModuleCtx, project: Project,
@@ -95,6 +112,43 @@ class OrmMisuseChecker(Checker):
                     "search() so PostgreSQL sorts (and can use an index)")
         if cfg.enabled("SD205"):
             yield from self._existence_tests(mod)
+        if cfg.enabled("SD206"):
+            for node, klass, method in mod.search_slice:
+                yield self.finding("SD206", mod, node,
+                                   self._slice_message(node))
+        if cfg.enabled("SD207"):
+            for node, klass, method in mod.agg_over_search:
+                yield self.finding("SD207", mod, node,
+                                   self._agg_message(node))
+
+    @staticmethod
+    def _slice_message(node: ast.expr) -> str:
+        n = 1
+        shape = "[0]"
+        if isinstance(node, ast.Subscript) \
+                and isinstance(node.slice, ast.Slice) \
+                and isinstance(node.slice.upper, ast.Constant) \
+                and isinstance(node.slice.upper.value, int):
+            n = node.slice.upper.value
+            shape = f"[:{n}]"
+        return (f"{shape} on an unlimited search() — every matching row "
+                f"was fetched to keep {n}; pass limit={n} (and order= if "
+                f"which record matters) so the DB stops early")
+
+    @staticmethod
+    def _agg_message(node: ast.expr) -> str:
+        agg, fname = "sum", None
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                agg = node.func.id
+            arg = node.args[0]
+            if isinstance(arg, ast.Call) and arg.args:
+                fname = const_str(arg.args[0])
+        field = f"'{fname}'" if fname else "a field"
+        return (f"{agg}() over mapped({field}) on a search() result "
+                f"fetches every row to compute one number — "
+                f"read_group/_read_group with '{fname or '...'}:{agg}' "
+                f"returns it in a single query")
 
     def _existence_tests(self, mod: ModuleCtx) -> Iterator[Finding]:
         unlimited = {

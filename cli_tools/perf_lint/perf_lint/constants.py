@@ -25,6 +25,8 @@ FLUSH_METHODS = {
 }
 # receiver methods whose lambda argument runs once per record
 PER_RECORD_LAMBDA = {"filtered", "mapped", "sorted"}
+# Python builtins that reduce a mapped() result to one number (SD207)
+PY_AGGREGATES = {"sum", "max", "min"}
 DOMAIN_METHODS = {
     "search", "search_count", "search_read", "search_fetch", "_search",
     "read_group", "_read_group",

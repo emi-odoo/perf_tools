@@ -26,6 +26,8 @@ class IndexChecker(Checker):
         "SD304": ("dotted-domain-x2many", "info",
                   "dotted domain traverses a x2many — nested sub-select "
                   "over the whole relation"),
+        "SD305": ("order-unindexed-field", "warning",
+                  "_order sorts on a field declared without index=True"),
     }
     explain = {
         "SD301": "Many2one columns are indexed BY DEFAULT — index=False is "
@@ -49,6 +51,14 @@ class IndexChecker(Checker):
                  "Consider searching the child model directly and mapping "
                  "back, or a stored aggregate on the parent. Info-level: "
                  "on small relations it is fine.",
+        "SD305": "_order is the default ORDER BY of every list view, "
+                 "every name_search dropdown and every search() without "
+                 "an explicit order — the single most executed sort in "
+                 "the model's life. Without an index PostgreSQL sorts the "
+                 "matching rows on every query; with a btree it streams "
+                 "them already sorted, and with limit= it reads only the "
+                 "first page. Same-codebase heuristic like SD302: only "
+                 "fields declared in the linted source are checked.",
     }
 
     def check_module(self, mod: ModuleCtx, project: Project,
@@ -67,6 +77,8 @@ class IndexChecker(Checker):
 
     def check_project(self, project: Project,
                       cfg: Config) -> Iterator[Finding]:
+        if cfg.enabled("SD305"):
+            yield from self._order_fields(project)
         seen: set[tuple[str | None, str]] = set()
         seen_dotted: set[tuple[str | None, str]] = set()
         for mod in project.modules:
@@ -118,6 +130,40 @@ class IndexChecker(Checker):
                     f"{t.model}.{t.fname} is searched (e.g. '{t.op}' at "
                     f"{where}) but declared without index=True — every "
                     f"lookup seq-scans the table")
+
+    def _order_fields(self, project: Project) -> Iterator[Finding]:
+        seen: set[tuple[str | None, str]] = set()
+        for mod in project.modules:
+            for klass in mod.models:
+                if not klass.order or klass.order_node is None:
+                    continue
+                for part in klass.order.split(","):
+                    tokens = part.split()
+                    fname = tokens[0] if tokens else ""
+                    key = (klass.model, fname)
+                    if not fname or fname == "id" or "." in fname \
+                            or key in seen:
+                        continue
+                    f = project.field(klass.model, fname)
+                    if f is None or f.ftype in LOW_CARDINALITY \
+                            or f.ftype in X2MANY or f.ftype == "Many2one":
+                        continue  # unknown/base field, or index won't help
+                    if f.kw("compute") and f.kw("store", False) is not True:
+                        continue  # not a real column
+                    if f.kw("related") and f.kw("store", False) is not True:
+                        continue
+                    if f.kw("index", False):
+                        continue
+                    if fname in project.unique_cols.get(
+                            klass.model or "", set()):
+                        continue
+                    seen.add(key)
+                    yield self.finding(
+                        "SD305", mod, klass.order_node,
+                        f"{klass.model or klass.class_name}._order sorts "
+                        f"on '{fname}' which is declared without "
+                        f"index=True — every default list view and "
+                        f"order-less search() pays a full sort")
 
     @staticmethod
     def _x2many_hop(project: Project, model: str | None,

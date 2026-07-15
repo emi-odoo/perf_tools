@@ -250,11 +250,94 @@ class OrmCheckTests(unittest.TestCase):
 
     def test_sd205_result_kept_in_a_variable_is_not_flagged(self):
         # conservative: the recordset is bound and may be used afterwards
+        # (but the [0] on the unlimited search is SD206's business)
         findings, _ = lint_model("""
             def first_named(self):
                 records = self.search([("name", "=", "x")])
                 if records:
                     return records[0]
+        """)
+        self.assertEqual(codes(findings), ["SD206"])
+
+    def test_sd206_index_zero_on_search(self):
+        findings, _ = lint_model("""
+            def first(self):
+                return self.search([("name", "=", "x")])[0]
+        """)
+        self.assertEqual(codes(findings), ["SD206"])
+        self.assertEqual(findings[0].severity, "warning")
+        self.assertIn("limit=1", findings[0].message)
+
+    def test_sd206_head_slice_on_search(self):
+        findings, _ = lint_model("""
+            def first_five(self):
+                return self.search([("name", "=", "x")])[:5]
+        """)
+        self.assertEqual(codes(findings), ["SD206"])
+        self.assertIn("limit=5", findings[0].message)
+
+    def test_sd206_through_variable(self):
+        findings, _ = lint_model("""
+            def first(self):
+                records = self.search([("name", "=", "x")])
+                return records[:1]
+        """)
+        self.assertEqual(codes(findings), ["SD206"])
+
+    def test_sd206_limited_search_is_clean(self):
+        findings, _ = lint_model("""
+            def first(self):
+                return self.search([("name", "=", "x")], limit=1)[0]
+        """)
+        self.assertEqual(codes(findings), [])
+
+    def test_sd206_limited_variable_is_clean(self):
+        findings, _ = lint_model("""
+            def first(self):
+                records = self.search([("name", "=", "x")], limit=5)
+                return records[0]
+        """)
+        self.assertEqual(codes(findings), [])
+
+    def test_sd206_plain_recordset_subscript_is_clean(self):
+        findings, _ = lint_model("""
+            def first(self):
+                return self[0]
+        """)
+        self.assertEqual(codes(findings), [])
+
+    def test_sd207_sum_over_mapped_search(self):
+        findings, _ = lint_model("""
+            def total(self):
+                lines = self.search([("name", "=", "x")])
+                return sum(lines.mapped("amount"))
+        """)
+        self.assertEqual(codes(findings), ["SD207"])
+        self.assertEqual(findings[0].severity, "warning")
+        self.assertIn("read_group", findings[0].message)
+
+    def test_sd207_max_over_chained_search(self):
+        findings, _ = lint_model("""
+            def newest(self):
+                return max(self.search(
+                    [("name", "=", "x")]).mapped("amount"))
+        """)
+        self.assertEqual(codes(findings), ["SD207"])
+
+    def test_sd207_mapped_on_plain_recordset_is_clean(self):
+        # self is the already-loaded batch: no extra fetch to save
+        findings, _ = lint_model("""
+            def total(self):
+                return sum(self.mapped("amount"))
+        """)
+        self.assertEqual(codes(findings), [])
+
+    def test_sd207_mapped_lambda_is_clean(self):
+        # a lambda cannot be expressed as a read_group aggregate
+        findings, _ = lint_model("""
+            def total(self):
+                lines = self.search([("name", "=", "x")])
+                return sum(lines.mapped(lambda r: 1))
         """)
         self.assertEqual(codes(findings), [])
 
@@ -353,6 +436,73 @@ class IndexCheckTests(unittest.TestCase):
         """)
         self.assertEqual(codes(findings), [])
 
+    def test_sd305_order_on_unindexed_field(self):
+        findings, _ = lint_sources({"order.py": """
+            from odoo import fields, models
+
+
+            class Order(models.Model):
+                _name = "my.order"
+                _order = "ref desc, id"
+
+                ref = fields.Char()
+        """})
+        self.assertEqual(codes(findings), ["SD305"])
+        self.assertEqual(findings[0].severity, "warning")
+        self.assertIn("'ref'", findings[0].message)
+
+    def test_sd305_indexed_order_field_is_clean(self):
+        findings, _ = lint_sources({"order.py": """
+            from odoo import fields, models
+
+
+            class Order(models.Model):
+                _name = "my.order"
+                _order = "ref desc, id"
+
+                ref = fields.Char(index=True)
+        """})
+        self.assertEqual(codes(findings), [])
+
+    def test_sd305_unknown_base_field_is_clean(self):
+        # create_date is not declared in the linted source: stay quiet
+        findings, _ = lint_sources({"order.py": """
+            from odoo import fields, models
+
+
+            class Order(models.Model):
+                _name = "my.order"
+                _order = "create_date desc, id"
+
+                ref = fields.Char()
+        """})
+        self.assertEqual(codes(findings), [])
+
+    def test_sd305_order_field_declared_in_other_file(self):
+        # cross-file: _order in the inheriting class, field in the base
+        findings, _ = lint_sources({
+            "order.py": """
+                from odoo import fields, models
+
+
+                class Order(models.Model):
+                    _name = "my.order"
+
+                    ref = fields.Char()
+            """,
+            "sorted.py": """
+                from odoo import models
+
+
+                class OrderSorted(models.Model):
+                    _inherit = "my.order"
+                    _order = "ref"
+            """,
+        })
+        self.assertEqual(codes(findings), ["SD305"])
+        # the finding anchors at the _order declaration
+        self.assertTrue(findings[0].path.endswith("sorted.py"))
+
     def test_sd303_trigram_index_is_clean(self):
         findings, _ = lint_sources({"tag.py": """
             from odoo import fields, models
@@ -416,6 +566,30 @@ class StorageCheckTests(unittest.TestCase):
                     rec.total = 0
         """)
         self.assertEqual(codes(findings), ["SD402"])
+
+    def test_sd403_stored_related_through_x2many(self):
+        findings, _ = lint_model("""
+            line_ids = fields.One2many("my.line", "ticket_id")
+            first_amount = fields.Float(
+                related="line_ids.amount", store=True)
+        """)
+        self.assertEqual(codes(findings), ["SD403"])
+        self.assertEqual(findings[0].severity, "error")
+        self.assertIn("line_ids", findings[0].message)
+
+    def test_sd403_unstored_related_is_clean(self):
+        findings, _ = lint_model("""
+            line_ids = fields.One2many("my.line", "ticket_id")
+            first_amount = fields.Float(related="line_ids.amount")
+        """)
+        self.assertEqual(codes(findings), [])
+
+    def test_sd403_stored_related_through_many2one_is_clean(self):
+        findings, _ = lint_model("""
+            partner_name = fields.Char(
+                related="partner_id.name", store=True)
+        """)
+        self.assertEqual(codes(findings), [])
 
     def test_sd402_unstored_compute_is_clean(self):
         findings, _ = lint_sources({"partner.py": """

@@ -62,6 +62,8 @@ def parse_class(node: ast.ClassDef) -> ModelClass | None:
     is_model = any(is_model_base(b) for b in node.bases)
     name: str | None = None
     inherit: str | None = None
+    order: str | None = None
+    order_node: ast.stmt | None = None
     fields: dict[str, FieldDecl] = {}
     methods: dict[str, MethodInfo] = {}
     unique: set[str] = set()
@@ -71,6 +73,9 @@ def parse_class(node: ast.ClassDef) -> ModelClass | None:
             tname = stmt.targets[0].id
             if tname == "_name":
                 name = const_str(stmt.value)
+            elif tname == "_order":
+                order = const_str(stmt.value)
+                order_node = stmt
             elif tname == "_inherit":
                 inherit = const_str(stmt.value)
                 if inherit is None and isinstance(stmt.value, ast.List) \
@@ -95,7 +100,7 @@ def parse_class(node: ast.ClassDef) -> ModelClass | None:
         m.is_compute = (m.name.startswith("_compute_")
                         or m.name in compute_names or bool(m.depends))
     return ModelClass(node, node.name, name or inherit, fields, methods,
-                      unique)
+                      unique, order, order_node)
 
 
 def analyze_file(path: str) -> ModuleCtx | None:

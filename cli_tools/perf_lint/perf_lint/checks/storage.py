@@ -19,6 +19,9 @@ class StorageChecker(Checker):
         "SD402": ("stored-compute-x2many-depends", "error",
                   "stored compute depends through a x2many — recompute "
                   "grenade"),
+        "SD403": ("stored-related-x2many", "error",
+                  "stored related= path traverses a x2many — recompute "
+                  "grenade"),
     }
     explain = {
         "SD401": "attachment=False stores binaries in the table/TOAST: "
@@ -32,6 +35,12 @@ class StorageChecker(Checker):
                  "with 1093 tickets rewrites 1094 rows. In a create loop "
                  "that is O(N²) row rewrites. Don't store it, or "
                  "aggregate on the other model.",
+        "SD403": "related='...' with store=True is a compute the framework "
+                 "writes for you — same recompute semantics as SD402. When "
+                 "the related path crosses a One2many/Many2many, one write "
+                 "on any related record re-derives and rewrites the field "
+                 "on every sibling. Drop store=True (related fields "
+                 "default to unstored) or aggregate on the other model.",
     }
 
     def check_module(self, mod: ModuleCtx, project: Project,
@@ -51,18 +60,30 @@ class StorageChecker(Checker):
 
     def check_project(self, project: Project,
                       cfg: Config) -> Iterator[Finding]:
-        if not cfg.enabled("SD402"):
+        if not (cfg.enabled("SD402") or cfg.enabled("SD403")):
             return
         for mod in project.modules:
             for klass in mod.models:
-                yield from self._check_class(mod, klass, project)
+                yield from self._check_class(mod, klass, project, cfg)
 
     def _check_class(self, mod: ModuleCtx, klass: ModelClass,
-                     project: Project) -> Iterator[Finding]:
+                     project: Project, cfg: Config) -> Iterator[Finding]:
         for f in klass.fields.values():
+            if f.kw("store", False) is not True:
+                continue
+            related = f.kw("related")
+            if isinstance(related, str) and cfg.enabled("SD403"):
+                hit = self._x2many_segment(project, klass.model, related)
+                if hit:
+                    yield self.finding(
+                        "SD403", mod, f.node,
+                        f"stored related '{f.name}' follows '{related}' — "
+                        f"'{hit}' is a x2many, so one change on any related "
+                        f"record rewrites the field on every sibling; drop "
+                        f"store=True or aggregate on the other model")
+                continue
             compute = f.kw("compute")
-            if not isinstance(compute, str) or f.kw("store", False) \
-                    is not True:
+            if not isinstance(compute, str) or not cfg.enabled("SD402"):
                 continue
             method = klass.methods.get(compute)
             for path in (method.depends if method else []):
