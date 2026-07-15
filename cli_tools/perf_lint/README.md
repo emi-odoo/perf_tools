@@ -121,12 +121,16 @@ version of any of them.
 | SD104 | query-in-create-write | error | per-record work inside `create()`/`write()` overrides |
 | SD105 | query-in-constrains | error | query inside `@api.constrains`; suggests a `models.Constraint` UNIQUE when the domain shape allows it |
 | SD106 | raw-sql-in-loop | info | `cr.execute` in a loop — info-only, chunked migrations are legitimate |
+| SD107 | flush-in-loop | warning | `flush_*()`/`invalidate_*()` per iteration — defeats write batching and prefetch |
 | SD201 | unbounded-search-all | warning | `search([])` with no domain and no `limit=` |
 | SD202 | filtered-after-search | warning | `.filtered()` on a `search()` result — the predicate belongs in the domain |
 | SD203 | len-search | warning | `len(search(...))` — use `search_count()` / `_read_group` |
+| SD204 | sorted-after-search | info | `.sorted()` on a `search()` result — the sort belongs in `order=` |
+| SD205 | search-for-existence | warning | `search()` result used only as a truth test — add `limit=1` |
 | SD301 | index-disabled | warning | `Many2one(index=False)` |
 | SD302 | unindexed-searched-field | warning | field used in a literal search domain but declared without `index=True` (cross-file; skips Selection/Boolean, non-stored compute/related, and unique-constraint columns) |
 | SD303 | ilike-domain | info | `like`/`ilike` in domains, unless the field has `index='trigram'` |
+| SD304 | dotted-domain-x2many | info | dotted domain path through a One2many/Many2many — nested sub-select over the whole relation |
 | SD401 | binary-in-table | warning | `fields.Binary(attachment=False)` |
 | SD402 | stored-compute-x2many-depends | error | `store=True` compute whose `@api.depends` path traverses a One2many/Many2many — a recompute grenade |
 
@@ -297,7 +301,7 @@ multi-line statement.
 | `mod.models` | list of `ModelClass` — parsed Odoo classes with `.model` (the `_name`/`_inherit`), `.fields` (name → `FieldDecl`), `.methods` (name → `MethodInfo`), `.unique_cols` |
 | `mod.query_events` | list of `QueryEvent` — every ORM read/write call, with `.fname`, `.kind` (`"read"`/`"write"`), `.model`, `.in_loop`, `.batched`, `.empty_domain`, and the enclosing `.klass`/`.method` |
 | `mod.domain_terms` | list of `DomainTerm` — every `(field, op, value)` triple from literal search domains, with the resolved `.model` |
-| `mod.len_search`, `mod.filtered_after_search` | pre-collected `(node, klass, method)` tuples for those specific shapes |
+| `mod.len_search`, `mod.filtered_after_search`, `mod.sorted_after_search` | pre-collected `(node, klass, method)` tuples for those specific shapes |
 
 **`project` — the cross-file `Project`:**
 

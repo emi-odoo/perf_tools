@@ -1,4 +1,5 @@
-"""SD30x — indexing."""
+"""SD30x — indexing and domain shapes the planner can't serve."""
+from ..astutils import const_str
 from ..constants import INDEXABLE_OPS, LOW_CARDINALITY, X2MANY
 from ..registry import Checker, register
 
@@ -13,6 +14,9 @@ class IndexChecker(Checker):
         "SD303": ("ilike-domain", "info",
                   "like/ilike in a domain — btree cannot help a leading "
                   "wildcard"),
+        "SD304": ("dotted-domain-x2many", "info",
+                  "dotted domain traverses a x2many — nested sub-select "
+                  "over the whole relation"),
     }
     explain = {
         "SD301": "Many2one columns are indexed BY DEFAULT — index=False is "
@@ -28,6 +32,14 @@ class IndexChecker(Checker):
                  "declarable in Odoo 19). Info-level because one scan is "
                  "cheap; the multipliers (name_search per keystroke) are "
                  "not.",
+        "SD304": "Each dot in a domain becomes `id IN (SELECT ...)`; "
+                 "through a One2many/Many2many that inner SELECT scans the "
+                 "child table (or the m2m bridge) for the WHOLE relation "
+                 "before the outer filter applies. Cheap through a "
+                 "Many2one, expensive through a x2many on big tables. "
+                 "Consider searching the child model directly and mapping "
+                 "back, or a stored aggregate on the parent. Info-level: "
+                 "on small relations it is fine.",
     }
 
     def check_module(self, mod, project, cfg):
@@ -45,8 +57,20 @@ class IndexChecker(Checker):
 
     def check_project(self, project, cfg):
         seen = set()
+        seen_dotted = set()
         for mod in project.modules:
             for t in mod.domain_terms:
+                if t.dotted and cfg.enabled("SD304"):
+                    path = const_str(t.node.elts[0]) or ""
+                    hop = self._x2many_hop(project, t.model, path)
+                    if hop and (t.model, path) not in seen_dotted:
+                        seen_dotted.add((t.model, path))
+                        yield self.finding(
+                            "SD304", mod, t.node,
+                            f"('{path}', ...) traverses x2many '{hop}' — "
+                            f"this becomes a nested sub-select over the "
+                            f"whole relation; search the child model "
+                            f"directly or store an aggregate")
                 if "like" in t.op and cfg.enabled("SD303"):
                     f = project.field(t.model, t.fname)
                     if f and f.kw("index") == "trigram":
@@ -83,6 +107,22 @@ class IndexChecker(Checker):
                     f"{t.model}.{t.fname} is searched (e.g. '{t.op}' at "
                     f"{where}) but declared without index=True — every "
                     f"lookup seq-scans the table")
+
+    @staticmethod
+    def _x2many_hop(project, model, path):
+        """First x2many segment of a dotted domain path, or None."""
+        cur = model
+        for seg in path.split("."):
+            fdecl = project.field(cur, seg)
+            if fdecl:
+                if fdecl.ftype in X2MANY:
+                    return seg
+                cur = fdecl.comodel if fdecl.ftype == "Many2one" else None
+            else:
+                if seg.endswith("_ids"):  # unresolvable: name heuristic
+                    return seg
+                cur = None
+        return None
 
     @staticmethod
     def _decl_site(project, model, fdecl):

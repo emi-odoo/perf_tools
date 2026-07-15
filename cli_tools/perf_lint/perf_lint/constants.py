@@ -17,6 +17,12 @@ CHAIN_METHODS = {
     "sorted", "search", "search_fetch", "create", "copy",
 }
 SEARCHY = {"search", "search_fetch"}
+# cache flush/invalidation — batching killers when called per iteration
+FLUSH_METHODS = {
+    "flush_all", "flush_model", "flush_recordset",
+    "invalidate_all", "invalidate_model", "invalidate_recordset",
+    "invalidate_cache", "clear_caches", "clear_cache",
+}
 # receiver methods whose lambda argument runs once per record
 PER_RECORD_LAMBDA = {"filtered", "mapped", "sorted"}
 DOMAIN_METHODS = {

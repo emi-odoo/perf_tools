@@ -75,7 +75,7 @@ class LoopQueryChecker(Checker):
 
     def check_module(self, mod, project, cfg):
         for ev in mod.query_events:
-            if not ev.in_loop:
+            if not ev.in_loop or ev.kind == "flush":
                 continue
             if ev.fname == "create" and ev.batched:
                 continue  # create([...]) in a loop = chunked batching
@@ -117,3 +117,34 @@ class LoopQueryChecker(Checker):
             "SD101": " — hoist one batched query out of the loop",
             "SD102": " — assign to the whole recordset / build one batch",
         }.get(code, "")
+
+
+@register
+class FlushInLoopChecker(Checker):
+    codes = {
+        "SD107": ("flush-in-loop", "warning",
+                  "cache flush/invalidation inside a loop"),
+    }
+    explain = {
+        "SD107": "flush_*() forces every pending write to SQL and "
+                 "invalidate_*() empties the cache the prefetcher just "
+                 "filled. Called once per iteration they turn the ORM's "
+                 "batched towrite/prefetch machinery back into one "
+                 "round-trip per record — the next field access after an "
+                 "invalidate re-fetches everything. Hoist the call out of "
+                 "the loop, or narrow it (flush_model/flush_recordset with "
+                 "fnames) if an in-loop barrier is genuinely required.",
+    }
+
+    def check_module(self, mod, project, cfg):
+        if not cfg.enabled("SD107"):
+            return
+        for ev in mod.query_events:
+            if ev.kind != "flush" or not ev.in_loop:
+                continue
+            where = ev.method.name if ev.method else "module level"
+            yield self.finding(
+                "SD107", mod, ev.node,
+                f"{ev.fname}() runs once per iteration in {where}() — it "
+                f"defeats write batching and prefetch; hoist it out of the "
+                f"loop or narrow it to the records/fields that need it")

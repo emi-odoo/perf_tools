@@ -39,7 +39,8 @@ Writing your own check (put this in my_checks.py and pass --plugin):
                     yield self.finding("X901", mod, node)
 
 `mod` (ModuleCtx) exposes: .tree, .lines, .models (parsed fields/methods),
-.query_events, .domain_terms, .len_search, .filtered_after_search.
+.query_events, .domain_terms, .len_search, .filtered_after_search,
+.sorted_after_search.
 `project` exposes: .modules, .field(model, name), .unique_cols.
 Checkers may also implement check_project(project, cfg) for cross-file rules.
 

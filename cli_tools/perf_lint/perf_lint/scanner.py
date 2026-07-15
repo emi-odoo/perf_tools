@@ -8,8 +8,8 @@ import ast
 
 from .astutils import const_str, is_cursor, is_env
 from .constants import (
-    CHAIN_METHODS, DOMAIN_METHODS, PER_RECORD_LAMBDA, QUERY_METHODS,
-    RELATIONAL, SEARCHY, WRITE_METHODS,
+    CHAIN_METHODS, DOMAIN_METHODS, FLUSH_METHODS, PER_RECORD_LAMBDA,
+    QUERY_METHODS, RELATIONAL, SEARCHY, WRITE_METHODS,
 )
 from .model import DomainTerm, MethodInfo, ModuleCtx, Project, QueryEvent
 
@@ -157,11 +157,19 @@ class FuncScanner(ast.NodeVisitor):
             if fname == "execute":
                 if is_cursor(func.value):
                     self._add_event(node, fname, "read", None)
-            elif fname == "filtered":
+            elif fname in ("filtered", "sorted"):
                 recv = self.resolve(func.value)
                 if recv and recv[0] == "search_result":
-                    self.mod.filtered_after_search.append(
-                        (node, self.klass, self.method))
+                    lst = (self.mod.filtered_after_search
+                           if fname == "filtered"
+                           else self.mod.sorted_after_search)
+                    lst.append((node, self.klass, self.method))
+            elif fname in FLUSH_METHODS:
+                v = func.value
+                if is_env(v) or self.resolve(v) or (
+                        isinstance(v, ast.Attribute)
+                        and v.attr == "registry"):
+                    self._add_event(node, fname, "flush", None)
             elif fname in QUERY_METHODS or fname in WRITE_METHODS:
                 recv = self.resolve(func.value)
                 if recv:

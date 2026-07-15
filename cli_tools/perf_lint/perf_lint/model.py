@@ -61,7 +61,7 @@ class ModelClass:
 class QueryEvent:
     node: ast.Call
     fname: str
-    kind: str  # "read" | "write"
+    kind: str  # "read" | "write" | "flush"
     model: str | None  # model name of the receiver, when resolvable
     in_loop: bool
     batched: bool  # create() called with a list/listcomp (batched)
@@ -92,6 +92,7 @@ class ModuleCtx:
     domain_terms: list = dc_field(default_factory=list)
     len_search: list = dc_field(default_factory=list)  # (node, klass, method)
     filtered_after_search: list = dc_field(default_factory=list)
+    sorted_after_search: list = dc_field(default_factory=list)
 
 
 class Project:

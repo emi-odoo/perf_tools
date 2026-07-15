@@ -152,6 +152,22 @@ class LoopCheckTests(unittest.TestCase):
         self.assertEqual(codes(findings), ["SD106"])
         self.assertEqual(findings[0].severity, "info")
 
+    def test_sd107_invalidate_in_loop(self):
+        findings, _ = lint_model("""
+            def refresh(self):
+                for rec in self:
+                    self.env.invalidate_all()
+        """)
+        self.assertEqual(codes(findings), ["SD107"])
+        self.assertEqual(findings[0].severity, "warning")
+
+    def test_sd107_flush_outside_loop_is_clean(self):
+        findings, _ = lint_model("""
+            def refresh(self):
+                self.env.flush_all()
+        """)
+        self.assertEqual(codes(findings), [])
+
     def test_sd106_module_level_migration_function(self):
         # module-level functions (migration scripts) are scanned too
         findings, _ = lint_sources({"migrate.py": """
@@ -195,6 +211,52 @@ class OrmCheckTests(unittest.TestCase):
                 return len(self.search([("name", "!=", False)]))
         """)
         self.assertEqual(codes(findings), ["SD203"])
+
+    def test_sd204_sorted_after_search(self):
+        findings, _ = lint_model("""
+            def newest(self):
+                tickets = self.env["my.ticket"].search(
+                    [("name", "!=", False)])
+                return tickets.sorted("name")
+        """)
+        self.assertEqual(codes(findings), ["SD204"])
+        self.assertEqual(findings[0].severity, "info")
+
+    def test_sd204_sorted_on_plain_recordset_is_clean(self):
+        findings, _ = lint_model("""
+            def by_name(self):
+                return self.sorted("name")
+        """)
+        self.assertEqual(codes(findings), [])
+
+    def test_sd205_search_as_truth_test(self):
+        findings, _ = lint_model("""
+            def has_named(self):
+                if self.search([("name", "=", "x")]):
+                    return True
+                return False
+        """)
+        self.assertEqual(codes(findings), ["SD205"])
+        self.assertEqual(findings[0].severity, "warning")
+
+    def test_sd205_limit_1_is_clean(self):
+        findings, _ = lint_model("""
+            def has_named(self):
+                if self.search([("name", "=", "x")], limit=1):
+                    return True
+                return False
+        """)
+        self.assertEqual(codes(findings), [])
+
+    def test_sd205_result_kept_in_a_variable_is_not_flagged(self):
+        # conservative: the recordset is bound and may be used afterwards
+        findings, _ = lint_model("""
+            def first_named(self):
+                records = self.search([("name", "=", "x")])
+                if records:
+                    return records[0]
+        """)
+        self.assertEqual(codes(findings), [])
 
 
 class IndexCheckTests(unittest.TestCase):
@@ -271,6 +333,25 @@ class IndexCheckTests(unittest.TestCase):
         """)
         self.assertEqual(codes(findings), ["SD303"])
         self.assertEqual(findings[0].severity, "info")
+
+    def test_sd304_dotted_domain_through_one2many(self):
+        findings, _ = lint_model("""
+            line_ids = fields.One2many("my.line", "ticket_id")
+
+            def done(self):
+                return self.search([("line_ids.state", "=", "done")],
+                                   limit=5)
+        """)
+        self.assertEqual(codes(findings), ["SD304"])
+        self.assertEqual(findings[0].severity, "info")
+
+    def test_sd304_dotted_through_many2one_is_clean(self):
+        findings, _ = lint_model("""
+            def by_partner_name(self):
+                return self.search([("partner_id.name", "=", "x")],
+                                   limit=5)
+        """)
+        self.assertEqual(codes(findings), [])
 
     def test_sd303_trigram_index_is_clean(self):
         findings, _ = lint_sources({"tag.py": """
