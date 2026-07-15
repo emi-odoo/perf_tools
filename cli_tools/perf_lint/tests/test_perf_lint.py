@@ -553,6 +553,14 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(main([tmp]), 1)
             self.assertIn("SD201", out.getvalue())
 
+    def test_text_output_has_clickable_path_line_col(self):
+        # `path:line:col` on one line = Ctrl/Cmd+clickable in IDE terminals
+        with tempfile.TemporaryDirectory() as tmp:
+            self._tmp_bad_addon(tmp)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                main([tmp, "--fail-on", "never", "--no-color"])
+            self.assertRegex(out.getvalue(), r"models\.py:\d+:\d+ SD201")
+
     def test_fail_on_thresholds(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._tmp_bad_addon(tmp)

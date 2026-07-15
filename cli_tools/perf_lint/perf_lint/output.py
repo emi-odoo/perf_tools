@@ -14,15 +14,15 @@ def render_text(findings, n_suppressed, color):
     def c(code, text):
         return f"{code}{text}{RESET}" if color else text
 
-    by_file = {}
-    for f in findings:
-        by_file.setdefault(f.path, []).append(f)
-    for path, items in sorted(by_file.items()):
-        print(c(BOLD, os.path.relpath(path)))
-        for f in items:
-            sev = c(COLORS[f.severity], f"{f.severity:<7}")
-            print(f"  {f.line:>4}:{f.col:<3} {c(BOLD, f.code)} "
-                  f"{c(DIM, f.name)} {sev} {f.message}")
+    for f in sorted(findings, key=lambda f: f.sort_key()):
+        # path:line:col must stay one uninterrupted token (no ANSI codes
+        # inside it) so terminals recognize it as a clickable file link
+        rel = os.path.relpath(f.path)
+        path = f.path if rel.startswith("..") else rel
+        loc = c(BOLD, f"{path}:{f.line}:{f.col}")
+        sev = c(COLORS[f.severity], f.severity)
+        print(f"{loc} {c(BOLD, f.code)} {c(DIM, f.name)} {sev} {f.message}")
+    if findings:
         print()
     counts = {s: sum(1 for f in findings if f.severity == s)
               for s in SEVERITIES}
